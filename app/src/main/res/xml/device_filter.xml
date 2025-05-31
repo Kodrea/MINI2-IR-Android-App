@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 0x3474 (hex) → 13428 (decimal) -->
+    <!-- 0x43D1 (hex) → 17361 (decimal) -->
+    <usb-device vendor-id="13428" product-id="17361" />
+    </resources>
