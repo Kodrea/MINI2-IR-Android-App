@@ -36,7 +36,10 @@ class MainActivity : AppCompatActivity() {
         
         // Set up button click listener to launch CameraActivity
         connectButton.setOnClickListener {
-            val intent = Intent(this, CameraActivity::class.java)
+            val intent = Intent(this, CameraActivity::class.java).apply {
+                // Add a flag to indicate we want to manually find the camera device
+                putExtra(CameraActivity.EXTRA_FIND_DEVICE, true)
+            }
             startActivity(intent)
         }
     }

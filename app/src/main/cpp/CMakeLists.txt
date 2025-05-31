@@ -11,6 +11,25 @@ cmake_minimum_required(VERSION 3.22.1)
 # build script scope).
 project("ircmd_handle")
 
+# Disable JPEG support for libuvc since we don't need it
+set(WITH_JPEG OFF CACHE BOOL "Build libuvc with JPEG support" FORCE)
+
+# Disable installation for libyuv since we're using it as a subdirectory
+set(INSTALL_LIBYUV OFF CACHE BOOL "Install libyuv" FORCE)
+
+# Add libyuv as a subdirectory
+add_subdirectory(third_party/libyuv)
+
+# Add libusb as a subdirectory (must be before libuvc)
+add_subdirectory(third_party/libusb)
+
+# Add libuvc as a subdirectory
+add_subdirectory(third_party/libuvc/libuvc-master)
+
+# Find required Android libraries
+find_library(log-lib log)
+find_library(android-lib android)
+
 # Creates and names a library, sets it as either STATIC
 # or SHARED, and provides the relative paths to its source code.
 # You can define multiple libraries, and CMake builds them for you.
@@ -26,7 +45,17 @@ project("ircmd_handle")
 # used in the AndroidManifest.xml file.
 add_library(${CMAKE_PROJECT_NAME} SHARED
         # List C/C++ source files with relative paths to this CMakeLists.txt.
-        native-lib.cpp)
+        native-lib.cpp
+        uvc_manager.cpp)
+
+# Add include directories for libuvc and libusb
+target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/libuvc/libuvc-master/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/libusb
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/libusb/libusb
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/libusb/libusb/os
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/libusb/android
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/libyuv/include)
 
 # Specifies libraries CMake should link to your target library. You
 # can link libraries from various origins, such as libraries defined in this
@@ -34,4 +63,8 @@ add_library(${CMAKE_PROJECT_NAME} SHARED
 target_link_libraries(${CMAKE_PROJECT_NAME}
         # List libraries link to the target library
         android
-        log)
+        log
+        nativewindow  # Add Android native window library
+        LibUSB::LibUSB  # Link against libusb
+        LibUVC::UVC
+        yuv)
