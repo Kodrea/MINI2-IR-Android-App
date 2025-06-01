@@ -13,6 +13,7 @@ import android.util.Log
 import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
@@ -114,12 +115,26 @@ class CameraActivity : AppCompatActivity() {
         }
     }
 
+    // Add IrcmdManager instance
+    private lateinit var ircmdManager: IrcmdManager
+
+    private lateinit var ffcButton: Button
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
         try {
+            // Initialize IrcmdManager
+            ircmdManager = IrcmdManager.getInstance()
+            
             // 1) Set up the UI first
             setContentView(R.layout.activity_camera)
+
+            // Initialize FFC button
+            ffcButton = findViewById(R.id.ffcButton)
+            ffcButton.setOnClickListener {
+                performFFC()
+            }
 
             // 2) Get the system UsbManager
             usbManager = getSystemService(UsbManager::class.java)
@@ -275,15 +290,25 @@ class CameraActivity : AppCompatActivity() {
         val fd: Int = deviceConnection!!.fileDescriptor
         Log.i(TAG, "openUsbCamera: fd: $fd")
         
-        // 3) Call native method to initialize the UVC camera
+        // 3) Initialize IrcmdManager with the file descriptor
+        if (!ircmdManager.init(fd)) {
+            val errorMsg = ircmdManager.getLastErrorMessage()
+            Log.e(TAG, "Failed to initialize IrcmdManager: $errorMsg")
+            Toast.makeText(this, "Failed to initialize camera SDK: $errorMsg", Toast.LENGTH_SHORT).show()
+            deviceConnection?.close()
+            return
+        }
+        
+        // 4) Call native method to initialize the UVC camera
         val success = nativeOpenUvcCamera(fd)
         
         if (success) {
-            // 4) Create a Surface for video rendering
+            // 5) Create a Surface for video rendering
             setupVideoSurface()
         } else {
             Toast.makeText(this, "Failed to initialize UVC stream", Toast.LENGTH_SHORT).show()
             deviceConnection?.close()
+            ircmdManager.cleanup()
         }
     }
 
@@ -334,6 +359,9 @@ class CameraActivity : AppCompatActivity() {
         
         // Close the UVC camera
         nativeCloseUvcCamera()
+        
+        // Clean up IrcmdManager
+        ircmdManager.cleanup()
         
         // Close the USB connection
         deviceConnection?.close()
@@ -437,5 +465,42 @@ class CameraActivity : AppCompatActivity() {
                 finish()
             }
         }
+    }
+
+    private fun performFFC() {
+        if (!ircmdManager.isInitialized()) {
+            Toast.makeText(this, "Camera not initialized", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        // Disable button during FFC
+        ffcButton.isEnabled = false
+        ffcButton.text = "FFC in progress..."
+
+        // Run FFC in background thread
+        Thread {
+            val result = ircmdManager.performFFC()
+            
+            // Update UI on main thread
+            runOnUiThread {
+                ffcButton.isEnabled = true
+                ffcButton.text = "FFC"
+                
+                when (result) {
+                    IrcmdManager.ERROR_SUCCESS -> {
+                        Toast.makeText(this, "FFC completed successfully", Toast.LENGTH_SHORT).show()
+                    }
+                    IrcmdManager.ERROR_NOT_INITIALIZED -> {
+                        Toast.makeText(this, "Camera not initialized", Toast.LENGTH_SHORT).show()
+                    }
+                    IrcmdManager.ERROR_USB_WRITE -> {
+                        Toast.makeText(this, "Failed to send FFC command", Toast.LENGTH_SHORT).show()
+                    }
+                    else -> {
+                        Toast.makeText(this, "FFC failed: ${ircmdManager.getLastErrorMessage()}", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        }.start()
     }
 }

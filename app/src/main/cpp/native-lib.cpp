@@ -1,11 +1,17 @@
 #include <jni.h>
+#include <string>
+#include <android/log.h>
 #include <android/native_window.h>
 #include <android/native_window_jni.h>
-#include <android/log.h>
 #include "uvc_manager.h"
+#include "libircmd.h"
+#include "ircmd_manager.h"
 
 // Global camera instance
 static std::unique_ptr<UVCCamera> g_camera;
+
+// Global IrcmdManager instance
+static std::unique_ptr<IrcmdManager> g_ircmd_manager;
 
 extern "C" {
 
@@ -104,6 +110,45 @@ Java_com_example_ircmd_1handle_CameraActivity_nativeGetCameraDimensions(JNIEnv* 
     
     __android_log_print(ANDROID_LOG_ERROR, "CameraActivity", "No supported format found");
     return nullptr;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_example_ircmd_1handle_IrcmdManager_nativeInit(JNIEnv* env, jobject thiz, jint fileDescriptor) {
+    if (!g_ircmd_manager) {
+        g_ircmd_manager = std::make_unique<IrcmdManager>();
+    }
+    return g_ircmd_manager->init(fileDescriptor);
+}
+
+JNIEXPORT void JNICALL
+Java_com_example_ircmd_1handle_IrcmdManager_nativeCleanup(JNIEnv* env, jobject thiz) {
+    if (g_ircmd_manager) {
+        g_ircmd_manager->cleanup();
+    }
+}
+
+JNIEXPORT jint JNICALL
+Java_com_example_ircmd_1handle_IrcmdManager_nativeGetLastError(JNIEnv* env, jobject thiz) {
+    if (!g_ircmd_manager) {
+        return 0;  // No error if manager doesn't exist
+    }
+    return g_ircmd_manager->getLastError();
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_example_ircmd_1handle_IrcmdManager_nativeGetLastErrorMessage(JNIEnv* env, jobject thiz) {
+    if (!g_ircmd_manager) {
+        return env->NewStringUTF("IrcmdManager not initialized");
+    }
+    return env->NewStringUTF(g_ircmd_manager->getLastErrorMessage());
+}
+
+JNIEXPORT jint JNICALL
+Java_com_example_ircmd_1handle_IrcmdManager_nativePerformFFC(JNIEnv* env, jobject thiz) {
+    if (!g_ircmd_manager) {
+        return -2;  // Error code for not initialized
+    }
+    return g_ircmd_manager->performFFC();
 }
 
 } // extern "C"

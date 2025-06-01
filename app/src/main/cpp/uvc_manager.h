@@ -3,7 +3,7 @@
 #include <android/log.h>
 #include <android/native_window.h>
 #include <libuvc/libuvc.h>
-#include <libusb.h> // For libusb_context
+#include <libusb.h> // For libusb_context and interface descriptor
 #include <memory>
 #include <mutex>
 #include <thread>  // Added for std::thread
@@ -35,6 +35,11 @@ public:
     // Get the UVC device handle
     uvc_device_handle_t* getDeviceHandle() const { return devh_; }
 
+    // New methods for device enumeration
+    bool enumerateInterfaces();
+    bool enumerateFormats();
+    void printDeviceInfo();
+
 private:
     // This function is deprecated in favor of init(int fileDescriptor)
     bool findAndOpenDevice();
@@ -63,4 +68,9 @@ private:
     // USB event thread
     std::thread usb_event_thread_;
     std::atomic<bool> keep_usb_event_thread_running_;
+
+    // Updated to use libusb_interface_descriptor instead of uvc_interface_descriptor_t
+    void printInterfaceInfo(const libusb_interface_descriptor* if_desc);
+    void printFormatInfo(const uvc_format_desc_t* format_desc);
+    void printFrameInfo(const uvc_frame_desc_t* frame_desc);
 }; 

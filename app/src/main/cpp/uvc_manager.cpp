@@ -159,6 +159,12 @@ bool UVCCamera::init(int fileDescriptor) {
         uvc_free_device_descriptor(dev_desc);
     }
 
+    // After successful device initialization, enumerate interfaces and formats
+    LOGI("Enumerating device interfaces and formats:");
+    printDeviceInfo();
+    enumerateInterfaces();
+    enumerateFormats();
+
     LOGI("UVC device initialized and configured successfully via FD wrapping");
     return true;
 }
@@ -410,4 +416,189 @@ void UVCCamera::usbEventThreadLoop() {
         }
     }
     LOGI("USB event thread finished.");
+}
+
+void UVCCamera::printInterfaceInfo(const libusb_interface_descriptor* if_desc) {
+    if (!if_desc) return;
+    
+    LOGI("Interface %d:", if_desc->bInterfaceNumber);
+    LOGI("  Class: %d", if_desc->bInterfaceClass);
+    LOGI("  Subclass: %d", if_desc->bInterfaceSubClass);
+    LOGI("  Protocol: %d", if_desc->bInterfaceProtocol);
+    LOGI("  Alt settings: %d", if_desc->bNumEndpoints);
+    
+    // Print endpoint information
+    for (int i = 0; i < if_desc->bNumEndpoints; i++) {
+        const libusb_endpoint_descriptor* ep = &if_desc->endpoint[i];
+        LOGI("  Endpoint %d:", i);
+        LOGI("    Address: 0x%02x", ep->bEndpointAddress);
+        LOGI("    Attributes: 0x%02x", ep->bmAttributes);
+        LOGI("    Max packet size: %d", ep->wMaxPacketSize);
+        LOGI("    Interval: %d", ep->bInterval);
+    }
+}
+
+void UVCCamera::printFormatInfo(const uvc_format_desc_t* format_desc) {
+    if (!format_desc) return;
+    
+    const char* format_name;
+    switch (format_desc->bDescriptorSubtype) {
+        case UVC_VS_FORMAT_UNCOMPRESSED:
+            format_name = "UncompressedFormat";
+            break;
+        case UVC_VS_FORMAT_MJPEG:
+            format_name = "MJPEGFormat";
+            break;
+        case UVC_VS_FORMAT_FRAME_BASED:
+            format_name = "FrameFormat";
+            break;
+        default:
+            format_name = "Unknown";
+            break;
+    }
+    
+    LOGI("Format: %s", format_name);
+    LOGI("  Format Index: %d", format_desc->bFormatIndex);
+    LOGI("  Number of frame descriptors: %d", format_desc->bNumFrameDescriptors);
+    
+    // Print format-specific information
+    if (format_desc->bDescriptorSubtype == UVC_VS_FORMAT_MJPEG) {
+        LOGI("  FourCC: %.4s", format_desc->fourccFormat);
+    } else {
+        LOGI("  Bits per pixel: %d", format_desc->bBitsPerPixel);
+        LOGI("  GUID: %02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+             format_desc->guidFormat[0], format_desc->guidFormat[1],
+             format_desc->guidFormat[2], format_desc->guidFormat[3],
+             format_desc->guidFormat[4], format_desc->guidFormat[5],
+             format_desc->guidFormat[6], format_desc->guidFormat[7],
+             format_desc->guidFormat[8], format_desc->guidFormat[9],
+             format_desc->guidFormat[10], format_desc->guidFormat[11],
+             format_desc->guidFormat[12], format_desc->guidFormat[13],
+             format_desc->guidFormat[14], format_desc->guidFormat[15]);
+    }
+    
+    LOGI("  Default frame index: %d", format_desc->bDefaultFrameIndex);
+    LOGI("  Aspect ratio: %dx%d", format_desc->bAspectRatioX, format_desc->bAspectRatioY);
+}
+
+void UVCCamera::printFrameInfo(const uvc_frame_desc_t* frame_desc) {
+    if (!frame_desc) return;
+    
+    LOGI("Frame: %dx%d", frame_desc->wWidth, frame_desc->wHeight);
+    LOGI("  Frame Index: %d", frame_desc->bFrameIndex);
+    LOGI("  Frame Interval: %d (%.2f fps)", 
+         frame_desc->dwDefaultFrameInterval,
+         10000000.0 / frame_desc->dwDefaultFrameInterval);
+}
+
+bool UVCCamera::enumerateInterfaces() {
+    if (!devh_) {
+        LOGE("Device not initialized");
+        return false;
+    }
+
+    // Get the device descriptor
+    uvc_device_descriptor_t* desc;
+    uvc_error_t res = uvc_get_device_descriptor(dev_, &desc);
+    if (res != UVC_SUCCESS) {
+        LOGE("Failed to get device descriptor: %s", uvc_strerror(res));
+        return false;
+    }
+
+    // Get the libusb device handle
+    libusb_device_handle* usb_devh = uvc_get_libusb_handle(devh_);
+    if (!usb_devh) {
+        LOGE("Failed to get libusb device handle");
+        uvc_free_device_descriptor(desc);
+        return false;
+    }
+
+    // Get the libusb device
+    libusb_device* usb_dev = libusb_get_device(usb_devh);
+    if (!usb_dev) {
+        LOGE("Failed to get libusb device");
+        uvc_free_device_descriptor(desc);
+        return false;
+    }
+
+    // Get the active configuration
+    libusb_config_descriptor* config;
+    int ret = libusb_get_active_config_descriptor(usb_dev, &config);
+    if (ret != LIBUSB_SUCCESS) {
+        LOGE("Failed to get config descriptor: %s", libusb_error_name(ret));
+        uvc_free_device_descriptor(desc);
+        return false;
+    }
+
+    LOGI("Device has %d interfaces", config->bNumInterfaces);
+    
+    // Print information about each interface
+    for (int i = 0; i < config->bNumInterfaces; i++) {
+        const libusb_interface* interface = &config->interface[i];
+        LOGI("Interface %d has %d alternate settings", i, interface->num_altsetting);
+        
+        // Print each alternate setting
+        for (int j = 0; j < interface->num_altsetting; j++) {
+            const libusb_interface_descriptor* if_desc = &interface->altsetting[j];
+            LOGI("Alternate setting %d:", j);
+            printInterfaceInfo(if_desc);
+        }
+    }
+
+    libusb_free_config_descriptor(config);
+    uvc_free_device_descriptor(desc);
+    return true;
+}
+
+bool UVCCamera::enumerateFormats() {
+    if (!devh_) {
+        LOGE("Device not initialized");
+        return false;
+    }
+
+    const uvc_format_desc_t* format_desc = uvc_get_format_descs(devh_);
+    if (!format_desc) {
+        LOGE("Failed to get format descriptors");
+        return false;
+    }
+
+    LOGI("Available formats:");
+    while (format_desc) {
+        printFormatInfo(format_desc);
+        
+        // Print frame information for this format
+        const uvc_frame_desc_t* frame_desc = format_desc->frame_descs;
+        while (frame_desc) {
+            printFrameInfo(frame_desc);
+            frame_desc = frame_desc->next;
+        }
+        
+        format_desc = format_desc->next;
+    }
+
+    return true;
+}
+
+void UVCCamera::printDeviceInfo() {
+    if (!devh_) {
+        LOGE("Device not initialized");
+        return;
+    }
+
+    uvc_device_descriptor_t* desc;
+    uvc_error_t res = uvc_get_device_descriptor(dev_, &desc);
+    if (res != UVC_SUCCESS) {
+        LOGE("Failed to get device descriptor: %s", uvc_strerror(res));
+        return;
+    }
+
+    LOGI("Device Information:");
+    LOGI("  Manufacturer: %s", desc->manufacturer ? desc->manufacturer : "Unknown");
+    LOGI("  Product: %s", desc->product ? desc->product : "Unknown");
+    LOGI("  Serial Number: %s", desc->serialNumber ? desc->serialNumber : "Unknown");
+    LOGI("  Vendor ID: 0x%04x", desc->idVendor);
+    LOGI("  Product ID: 0x%04x", desc->idProduct);
+    LOGI("  UVC Version: %d.%d", (desc->bcdUVC >> 8) & 0xFF, desc->bcdUVC & 0xFF);
+
+    uvc_free_device_descriptor(desc);
 } 

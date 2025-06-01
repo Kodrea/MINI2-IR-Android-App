@@ -46,7 +46,20 @@ find_library(android-lib android)
 add_library(${CMAKE_PROJECT_NAME} SHARED
         # List C/C++ source files with relative paths to this CMakeLists.txt.
         native-lib.cpp
-        uvc_manager.cpp)
+        uvc_manager.cpp
+        ircmd_manager.cpp)
+
+# Add SDK libraries directory
+set(SDK_LIBS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../jniLibs/${ANDROID_ABI})
+
+# Add SDK libraries
+add_library(ircmd SHARED IMPORTED)
+set_target_properties(ircmd PROPERTIES IMPORTED_LOCATION
+    ${SDK_LIBS_DIR}/libircmd.so)
+
+add_library(iruvc SHARED IMPORTED)
+set_target_properties(iruvc PROPERTIES IMPORTED_LOCATION
+    ${SDK_LIBS_DIR}/libiruvc.so)
 
 # Add include directories for libuvc and libusb
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
@@ -55,7 +68,8 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/third_party/libusb/libusb
         ${CMAKE_CURRENT_SOURCE_DIR}/third_party/libusb/libusb/os
         ${CMAKE_CURRENT_SOURCE_DIR}/third_party/libusb/android
-        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/libyuv/include)
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/libyuv/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/Include)
 
 # Specifies libraries CMake should link to your target library. You
 # can link libraries from various origins, such as libraries defined in this
@@ -67,4 +81,6 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
         nativewindow  # Add Android native window library
         LibUSB::LibUSB  # Link against libusb
         LibUVC::UVC
+        ircmd
+        iruvc
         yuv)
