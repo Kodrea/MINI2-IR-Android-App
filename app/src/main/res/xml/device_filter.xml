@@ -3,7 +3,6 @@
     <!-- Thermal Camera Co.,Ltd device -->
     <usb-device
         vendor-id="13428"
-        product-id="17361"
         class="239"
         subclass="2" />
 </resources>

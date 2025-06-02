@@ -1,0 +1,28 @@
+# ────────────────────────────────────────────────────────────────────────────
+# 1) Completely ignore all files/folders inside libusb, libuvc, libyuv:
+#
+.idea/*
+app/src/main/cpp/third_party/libusb/*
+app/src/main/cpp/third_party/libuvc/*
+app/src/main/cpp/third_party/libyuv/*
+
+#app/src/main/jniLibs/arm64-v8a/*
+app/src/main/jniLibs/armeabi-v7a/*
+app/src/main/jniLibs/x86/*
+app/src/main/jniLibs/x86_64/*
+
+# ────────────────────────────────────────────────────────────────────────────
+# 2) But do not ignore (i.e. “whitelist”) the include‐header trees:
+#
+#    For libusb, the actual headers live under libusb/libusb/…
+!app/src/main/cpp/third_party/libusb/libusb/libusb.h
+
+#    For libuvc, the headers are in libuvc/libuvc-master/include/…
+!app/src/main/cpp/third_party/libuvc/libuvc-master/include/
+!app/src/main/cpp/third_party/libuvc/libuvc-master/include/**
+
+#    For libyuv, the headers are in libyuv/include/…
+!app/src/main/cpp/third_party/libyuv/include/
+!app/src/main/cpp/third_party/libyuv/include/**
+
+

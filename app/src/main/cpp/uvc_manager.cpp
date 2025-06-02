@@ -6,6 +6,11 @@
 #include <libusb.h>
 #include <libyuv.h>
 
+// Helper function for color conversion
+inline int clamp(int value, int min, int max) {
+    return value < min ? min : (value > max ? max : value);
+}
+
 extern "C" uvc_error_t uvc_wrap(int sys_dev, uvc_context_t *context, uvc_device_handle_t **devh);
 
 // Global camera instance
@@ -357,12 +362,31 @@ void UVCCamera::frameCallback(uvc_frame_t* frame, void* ptr) {
         return;
     }
 
+
+    // Verify frame format
     if (frame->frame_format != UVC_FRAME_FORMAT_YUYV) {
-        LOGE("frameCallback: Unsupported frame format: %d", frame->frame_format);
+        LOGE("frameCallback: Unsupported frame format: %d (expected YUYV=%d)", 
+             frame->frame_format, UVC_FRAME_FORMAT_YUYV);
+        return;
+    }
+
+    // Verify frame dimensions
+    if (frame->width <= 0 || frame->height <= 0 || frame->data_bytes <= 0) {
+        LOGE("frameCallback: Invalid frame dimensions: %dx%d, data_size=%d",
+             frame->width, frame->height, frame->data_bytes);
+        return;
+    }
+
+    // Calculate expected data size for YUYV format (2 bytes per pixel)
+    size_t expected_size = frame->width * frame->height * 2;
+    if (frame->data_bytes < expected_size) {
+        LOGE("frameCallback: Frame data size too small: %d < %zu",
+             frame->data_bytes, expected_size);
         return;
     }
 
     ANativeWindow_Buffer buffer;
+    // For little-endian systems (like Android), RGBA_8888 is actually stored as ABGR in memory
     int set_geom_ret = ANativeWindow_setBuffersGeometry(camera->window_, frame->width, frame->height, WINDOW_FORMAT_RGBA_8888);
     if (set_geom_ret != 0) {
         LOGE("frameCallback: Failed to set buffers geometry: %d", set_geom_ret);
@@ -375,18 +399,52 @@ void UVCCamera::frameCallback(uvc_frame_t* frame, void* ptr) {
         return;
     }
 
-    // Use libyuv for YUYV to RGBA conversion
-    int result = libyuv::YUY2ToARGB(
-        static_cast<const uint8_t*>(frame->data),  // src_yuy2
-        frame->width * 2,                          // src_stride_yuy2 (2 bytes per pixel)
-        static_cast<uint8_t*>(buffer.bits),        // dst_argb
-        buffer.stride * 4,                         // dst_stride_argb (4 bytes per pixel)
-        frame->width,                              // width
-        frame->height                              // height
-    );
 
+    // Verify buffer dimensions
+    if (buffer.width < frame->width || buffer.height < frame->height) {
+        LOGE("frameCallback: Buffer too small: %dx%d < %dx%d",
+             buffer.width, buffer.height, frame->width, frame->height);
+        ANativeWindow_unlockAndPost(camera->window_);
+        return;
+    }
+
+    // Calculate expected stride for RGBA (4 bytes per pixel)
+    size_t expected_stride = frame->width * 4;
+    if (buffer.stride * 4 < expected_stride) {
+        LOGE("frameCallback: Buffer stride too small: %d < %zu",
+             buffer.stride * 4, expected_stride);
+        ANativeWindow_unlockAndPost(camera->window_);
+        return;
+    }
+
+    // Use libyuv YUY2ToARGB with additional safety checks
+    int result = libyuv::YUY2ToARGB(
+        static_cast<const uint8_t*>(frame->data),     // src_yuy2
+        frame->step,                                  // src_stride_yuy2 (use frame->step)
+        static_cast<uint8_t*>(buffer.bits),           // dst_argb
+        buffer.stride * 4,                            // dst_stride_argb (4 bytes per pixel)
+        frame->width,                                 // width
+        frame->height                                 // height
+    );
+    
     if (result != 0) {
         LOGE("frameCallback: YUY2ToARGB conversion failed: %d", result);
+        ANativeWindow_unlockAndPost(camera->window_);
+        return;
+    }
+    
+    // Convert from ARGB to ABGR using libyuv function
+    result = libyuv::ARGBToABGR(
+        static_cast<uint8_t*>(buffer.bits),           // src_argb
+        buffer.stride * 4,                            // src_stride_argb
+        static_cast<uint8_t*>(buffer.bits),           // dst_abgr (same buffer)
+        buffer.stride * 4,                            // dst_stride_abgr
+        frame->width,                                 // width
+        frame->height                                 // height
+    );
+    
+    if (result != 0) {
+        LOGE("frameCallback: ARGBToABGR conversion failed: %d", result);
         ANativeWindow_unlockAndPost(camera->window_);
         return;
     }

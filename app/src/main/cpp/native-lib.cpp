@@ -13,10 +13,20 @@ static std::unique_ptr<UVCCamera> g_camera;
 // Global IrcmdManager instance
 static std::unique_ptr<IrcmdManager> g_ircmd_manager;
 
+// Add new global variables to store the current device configuration
+static int g_current_width = 384;
+static int g_current_height = 288;
+static int g_current_fps = 60;
+
 extern "C" {
 
 JNIEXPORT jboolean JNICALL
-Java_com_example_ircmd_1handle_CameraActivity_nativeOpenUvcCamera(JNIEnv* env, jobject thiz, jint fd) {
+Java_com_example_ircmd_1handle_CameraActivity_nativeOpenUvcCamera(JNIEnv* env, jobject thiz, jint fd, jint width, jint height, jint fps) {
+    // Store the device configuration
+    g_current_width = width;
+    g_current_height = height;
+    g_current_fps = fps;
+    
     if (!g_camera) {
         g_camera = std::make_unique<UVCCamera>();
     }
@@ -37,8 +47,8 @@ Java_com_example_ircmd_1handle_CameraActivity_nativeStartStreaming(JNIEnv* env, 
         return JNI_FALSE;
     }
 
-    // Default to 640x480@30fps, but you may want to adjust based on your camera
-    bool result = g_camera->startStream(384, 288, 60, window);
+    // Use the stored device configuration
+    bool result = g_camera->startStream(g_current_width, g_current_height, g_current_fps, window);
     if (!result) {
         ANativeWindow_release(window);
     }
@@ -113,11 +123,11 @@ Java_com_example_ircmd_1handle_CameraActivity_nativeGetCameraDimensions(JNIEnv* 
 }
 
 JNIEXPORT jboolean JNICALL
-Java_com_example_ircmd_1handle_IrcmdManager_nativeInit(JNIEnv* env, jobject thiz, jint fileDescriptor) {
+Java_com_example_ircmd_1handle_IrcmdManager_nativeInit(JNIEnv* env, jobject thiz, jint fileDescriptor, jint deviceType) {
     if (!g_ircmd_manager) {
         g_ircmd_manager = std::make_unique<IrcmdManager>();
     }
-    return g_ircmd_manager->init(fileDescriptor);
+    return g_ircmd_manager->init(fileDescriptor, deviceType);
 }
 
 JNIEXPORT void JNICALL
@@ -148,7 +158,40 @@ Java_com_example_ircmd_1handle_IrcmdManager_nativePerformFFC(JNIEnv* env, jobjec
     if (!g_ircmd_manager) {
         return -2;  // Error code for not initialized
     }
-    return g_ircmd_manager->performFFC();
+    return g_ircmd_manager->executeActionFunction(PERFORM_FFC);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_example_ircmd_1handle_IrcmdManager_nativeExecuteGetFunction(JNIEnv* env, jobject thiz, jint functionId, jobject resultObj) {
+    if (!g_ircmd_manager) {
+        return -2;  // Error code for not initialized
+    }
+    
+    int value = 0;
+    int result = g_ircmd_manager->executeGetFunction(static_cast<CameraFunction>(functionId), value);
+    
+    // Set the output value using JNI
+    jclass integerClass = env->GetObjectClass(resultObj);
+    jfieldID valueField = env->GetFieldID(integerClass, "value", "I");
+    env->SetIntField(resultObj, valueField, value);
+    
+    return result;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_example_ircmd_1handle_IrcmdManager_nativeExecuteSetFunction(JNIEnv* env, jobject thiz, jint functionId, jint value) {
+    if (!g_ircmd_manager) {
+        return -2;  // Error code for not initialized
+    }
+    return g_ircmd_manager->executeSetFunction(static_cast<CameraFunction>(functionId), value);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_example_ircmd_1handle_IrcmdManager_nativeExecuteActionFunction(JNIEnv* env, jobject thiz, jint functionId) {
+    if (!g_ircmd_manager) {
+        return -2;  // Error code for not initialized
+    }
+    return g_ircmd_manager->executeActionFunction(static_cast<CameraFunction>(functionId));
 }
 
 } // extern "C"

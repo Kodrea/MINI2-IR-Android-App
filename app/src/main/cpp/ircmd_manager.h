@@ -52,47 +52,83 @@ typedef struct {
 // Typedef for the function pointer, matching UsbWriteFunc for our purposes
 typedef int (*MySdk_UsbWriteFunc)(void* driver_handle, void* usb_cmd_param, uint8_t* data, uint16_t len);
 
-// Based on _IrcmdHandle_t from ir_control_handle.md.c
-// The original is 0x6c50 bytes, which is huge due to `file_info[100]`.
-// We need to ensure the layout includes space for total_length and transferred_length
-// as standard_cmd_write accesses them.
+// Add device type enum before the structure definition
+typedef enum device_type_e {
+    DEV_CS640 = 1,
+    DEV_G1280S = 2,
+    DEV_MINI2_384 = 3,
+    DEV_AC02 = 4,
+    DEV_P2L = 5,
+    DEV_TINY2_C = 6,
+    DEV_MINI2_256 = 7,
+    DEV_MINI2_640 = 8,
+    DEV_G21280S = 9
+} device_type_e;
+
+// Forward declare the function type to match original
+typedef int (*HandleFunc)(void* driver_handle, void* usb_cmd_param, uint8_t* data, uint16_t len);
+
+// Structure to match original decompiled version exactly
 typedef struct {
-    void* read_func;                                 // Offset 0
-    MySdk_UsbWriteFunc write_func;                   // Offset 8 (IMPORTANT)
-    void* firmware_download_func;                    // Offset 16
-    void* detect_device_status_func;                 // Offset 24
-    void* command_channel_type_get_func;             // Offset 32
-    void* write_func_without_read_return_status;     // Offset 40
-    void* device_open_func;                          // Offset 48
-    void* device_init_func;                          // Offset 56
-    void* device_close_func;                         // Offset 64
-    MySdk_IruvcHandle_t *driver_handle;              // Offset 72 (IMPORTANT - points to MySdk_IruvcHandle_t)
+    HandleFunc read_func;                            // Offset 0
+    HandleFunc write_func;                           // Offset 8
+    HandleFunc firmware_download_func;               // Offset 16
+    HandleFunc detect_device_status_func;            // Offset 24
+    HandleFunc command_channel_type_get_func;        // Offset 32
+    HandleFunc write_func_without_read_return_status;// Offset 40
+    HandleFunc device_open_func;                     // Offset 48
+    HandleFunc device_init_func;                     // Offset 56
+    HandleFunc device_close_func;                    // Offset 64
+    void* driver_handle;                             // Offset 72
     uint8_t driver_type;                             // Offset 80
-    uint8_t _pad_to_align_slave_id[1];               // Padding to align next uint16_t (make it total 2 bytes)
-    uint16_t slave_id;                               // Offset 82
-    uint16_t polling_time;                           // Offset 84 (IMPORTANT)
-    void * (*upgrade_callback)(void *, void *);      // Offset 88 (approx, if pointers are 8B, uint16_t 2B)
-    void *upgrade_priv_data;                         // Offset 96 (approx)
+    uint16_t slave_id;                               // Offset 82 (no padding needed, naturally aligned)
+    uint16_t polling_time;                           // Offset 84
+    void* (*upgrade_callback)(void*, void*);         // Offset 88
+    void* upgrade_priv_data;                         // Offset 96
 
-    // Placeholder for the large file_info[100] array and file_num that precede total_length.
-    // From _IrcmdHandle_t decompilation:
-    //   struct file_info_t file_info[100];
-    //   uint16_t file_num;
-    // Let's estimate file_info_t is moderately sized, e.g. 32 bytes. 100 * 32 = 3200 bytes.
-    // Add space for file_num (2 bytes). Total padding needed ~3202 bytes.
-    // Round up for alignment, e.g., 3208 bytes.
-    uint8_t file_info_and_num_padding[3208];         // Offset after upgrade_priv_data
+    // File info array and count
+    struct {
+        uint8_t dummy[32];  // Placeholder for file_info_t structure
+    } file_info[100];                               // Offset 104
+    uint16_t file_num;                              // Offset 3304 (104 + 100*32)
 
-    uint32_t total_length;                           // Offset ~96 + 8 (for priv_data if ptr) + 3208 = ~3312
-    uint32_t transferred_length;                     // Offset ~3316
-
-    // Placeholder for:
-    //   enum device_type_e device_type;
-    //   uint8_t device_type_got_flag;
-    // And any other trailing members or general padding to reach a safer total size.
-    uint8_t remaining_sdk_fields_padding[128];       // Generous final padding
-
+    uint32_t total_length;                          // Offset 3306 (3304 + 2)
+    uint32_t transferred_length;                    // Offset 3310 (3306 + 4)
+    device_type_e device_type;                      // Offset 3314 (3310 + 4)
+    uint8_t device_type_got_flag;                   // Offset 3318 (3314 + 4)
 } MySdk_IrcmdHandle_t;
+
+// Camera function enumerations
+enum CameraFunction {
+    // Getter functions
+    GET_BRIGHTNESS = 0,
+    
+    // Setter functions
+    SET_BRIGHTNESS = 1,
+    SET_CONTRAST = 2,
+    
+    // Action functions
+    PERFORM_FFC = 3,
+    
+    // Palette functions
+    SET_PALETTE = 4,
+    
+    // Scene mode functions
+    SET_SCENE_MODE = 5,
+    
+    // Noise reduction functions
+    SET_NOISE_REDUCTION = 6,
+    SET_TIME_NOISE_REDUCTION = 7,
+    SET_SPACE_NOISE_REDUCTION = 8,
+    
+    // Detail enhancement function
+    SET_DETAIL_ENHANCEMENT = 9,
+    
+    // Global contrast function
+    SET_GLOBAL_CONTRAST = 10
+    
+    // Add more as needed...
+};
 
 class IrcmdManager {
 public:
@@ -100,7 +136,7 @@ public:
     ~IrcmdManager();
 
     // Initialize the manager with a file descriptor
-    bool init(int fileDescriptor);
+    bool init(int fileDescriptor, int deviceType);
     
     // Clean up resources
     void cleanup();
@@ -114,8 +150,18 @@ public:
     // Check if the manager is initialized
     bool isInitialized() const { return is_initialized_; }
 
-    // FFC command
-    int performFFC();
+    // Get properly cast handle to use with SDK functions
+    IrcmdHandle_t* getCmdHandle() const {
+        return reinterpret_cast<IrcmdHandle_t*>(ircmd_handle_);
+    }
+
+    // Camera function execution
+    int executeGetFunction(CameraFunction func, int& outValue);
+    int executeSetFunction(CameraFunction func, int value);
+    int executeActionFunction(CameraFunction func);
+
+    // Set device type based on actual device
+    void setDeviceType();
 
 private:
     // Set the last error code

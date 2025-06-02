@@ -61,6 +61,10 @@ add_library(iruvc SHARED IMPORTED)
 set_target_properties(iruvc PROPERTIES IMPORTED_LOCATION
     ${SDK_LIBS_DIR}/libiruvc.so)
 
+add_library(ircam SHARED IMPORTED)
+set_target_properties(ircam PROPERTIES IMPORTED_LOCATION
+    ${SDK_LIBS_DIR}/libircam.so)
+
 # Add include directories for libuvc and libusb
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/third_party/libuvc/libuvc-master/include
@@ -83,4 +87,5 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
         LibUVC::UVC
         ircmd
         iruvc
+        ircam  # Add libircam
         yuv)
