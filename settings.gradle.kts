@@ -20,5 +20,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "ircmd_handle"
+rootProject.name = "MINI2 IR"
 include(":app")

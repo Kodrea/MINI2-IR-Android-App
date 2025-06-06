@@ -1,4 +1,4 @@
-package com.example.ircmd_handle
+package com.example.MINI2_IR
 
 import android.content.Context
 import android.content.SharedPreferences

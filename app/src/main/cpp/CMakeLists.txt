@@ -9,7 +9,7 @@ cmake_minimum_required(VERSION 3.22.1)
 # Since this is the top level CMakeLists.txt, the project name is also accessible
 # with ${CMAKE_PROJECT_NAME} (both CMake variables are in-sync within the top level
 # build script scope).
-project("ircmd_handle")
+project("MINI2-IR")
 
 # Disable JPEG support for libuvc since we don't need it
 set(WITH_JPEG OFF CACHE BOOL "Build libuvc with JPEG support" FORCE)

@@ -1,11 +1,11 @@
-package com.example.ircmd_handle
+package com.example.MINI2_IR
 
 import android.app.Application
 import android.util.Log
 
-class IrcmdApplication : Application() {
+class Mini2IRApplication : Application() {
     companion object {
-        private const val TAG = "IrcmdApplication"
+        private const val TAG = "Mini2IRApplication"
     }
 
     override fun onCreate() {

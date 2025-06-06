@@ -1,4 +1,4 @@
-package com.example.ircmd_handle
+package com.example.MINI2_IR
 
 import android.Manifest
 import android.app.PendingIntent
@@ -67,7 +67,7 @@ class CameraActivity : AppCompatActivity() {
         private const val DEVICE_SUBCLASS = 2
 
         // Intent extra to find device manually
-        const val EXTRA_FIND_DEVICE = "com.example.ircmd_handle.FIND_DEVICE"
+        const val EXTRA_FIND_DEVICE = "com.example.MINI2_IR.FIND_DEVICE"
         
         // Palette names and limits
         private val PALETTE_NAMES = arrayOf(
@@ -107,7 +107,7 @@ class CameraActivity : AppCompatActivity() {
         
         // Load the native library
         init {
-            System.loadLibrary("ircmd_handle")
+            System.loadLibrary("MINI2_IR")
         }
         
         // Add flag to prevent activity recreation

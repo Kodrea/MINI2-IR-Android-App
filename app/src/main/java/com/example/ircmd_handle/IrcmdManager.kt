@@ -1,4 +1,4 @@
-package com.example.ircmd_handle
+package com.example.MINI2_IR
 
 import android.util.Log
 
@@ -12,7 +12,7 @@ class IrcmdManager private constructor() {
         
         // Load the native library
         init {
-            System.loadLibrary("ircmd_handle")
+            System.loadLibrary("ircmdMINI2_IR_handle")
         }
         
         // Singleton instance
