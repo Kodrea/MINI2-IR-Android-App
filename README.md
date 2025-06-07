@@ -1,4 +1,4 @@
-# MINI2-IR Android App
+# ircmd_handle Android App
 
 An Android application for interfacing with MINI2 thermal cameras, supporting various models including MINI2-384, MINI2-256, and MINI2-640.
 

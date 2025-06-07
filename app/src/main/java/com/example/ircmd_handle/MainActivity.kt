@@ -1,4 +1,4 @@
-package com.example.MINI2_IR
+package com.example.ircmd_handle
 
 import android.Manifest
 import android.app.AlertDialog
@@ -37,9 +37,9 @@ class MainActivity : AppCompatActivity() {
         private const val DEVICE_CLASS = 239
         private const val DEVICE_SUBCLASS = 2
 
-        // Used to load the 'MINI2_IR' library on application startup.
+        // Used to load the 'ircmd_handle' library on application startup.
         init {
-            System.loadLibrary("MINI2_IR")
+            System.loadLibrary("ircmd_handle")
         }
     }
     
@@ -449,7 +449,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * A native method that is implemented by the 'MINI2_IR' native library,
+     * A native method that is implemented by the 'ircmd_handle' native library,
      * which is packaged with this application.
      */
     external fun stringFromJNI(): String

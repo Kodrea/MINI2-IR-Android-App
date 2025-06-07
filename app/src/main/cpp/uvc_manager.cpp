@@ -372,7 +372,7 @@ void UVCCamera::frameCallback(uvc_frame_t* frame, void* ptr) {
 
     // Verify frame dimensions
     if (frame->width <= 0 || frame->height <= 0 || frame->data_bytes <= 0) {
-        LOGE("frameCallback: Invalid frame dimensions: %dx%d, data_size=%d",
+        LOGE("frameCallback: Invalid frame dimensions: %dx%d, data_size=%zu",
              frame->width, frame->height, frame->data_bytes);
         return;
     }
@@ -380,7 +380,7 @@ void UVCCamera::frameCallback(uvc_frame_t* frame, void* ptr) {
     // Calculate expected data size for YUYV format (2 bytes per pixel)
     size_t expected_size = frame->width * frame->height * 2;
     if (frame->data_bytes < expected_size) {
-        LOGE("frameCallback: Frame data size too small: %d < %zu",
+        LOGE("frameCallback: Frame data size too small: %zu < %zu",
              frame->data_bytes, expected_size);
         return;
     }

@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "com.example.MINI2_IR"
+    namespace = "com.example.ircmd_handle"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.example.MINI2_IR"
+        applicationId = "com.example.ircmd_handle"
         minSdk = 26
         targetSdk = 35
         versionCode = 1
