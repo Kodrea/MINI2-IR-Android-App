@@ -8,6 +8,15 @@
     <uses-feature android:name="android.hardware.usb.host" android:required="true" />
 
     <uses-permission android:name="android.permission.USB_PERMISSION" />
+    
+    <!-- Storage permissions for saving enhanced images and videos -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    
+    <!-- Audio recording permission for video recording -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <application
         android:name=".Mini2IRApplication"
@@ -43,6 +52,12 @@
             <meta-data 
                 android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
                 android:resource="@xml/device_filter" />
+        </activity>
+
+        <activity
+            android:name=".TfLiteTestActivity"
+            android:exported="true"
+            android:label="FSRCNN Super Resolution Test">
         </activity>
 
     </application>

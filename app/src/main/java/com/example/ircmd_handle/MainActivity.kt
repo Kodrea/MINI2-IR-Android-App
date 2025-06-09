@@ -25,6 +25,9 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.google.android.material.textfield.TextInputEditText
+import com.example.ircmd_handle.databinding.ActivityMainBinding
+import com.google.android.material.snackbar.Snackbar
+import kotlinx.coroutines.*
 
 class MainActivity : AppCompatActivity() {
     companion object {
@@ -43,12 +46,11 @@ class MainActivity : AppCompatActivity() {
         }
     }
     
-    // UI elements
-    private lateinit var requestPermissionButton: Button
-    private lateinit var openCameraButton: Button
-    private lateinit var manageDevicesButton: Button
-    private lateinit var addDeviceButton: Button
-    private lateinit var deviceInfoText: TextView
+    // ViewBinding
+    private lateinit var binding: ActivityMainBinding
+    
+    // Coroutine scope for lifecycle-aware operations
+    private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     
     // USB related
     private lateinit var usbManager: UsbManager
@@ -75,12 +77,14 @@ class MainActivity : AppCompatActivity() {
                         runOnUiThread {
                             if (granted) {
                                 Log.i(TAG, "USB permission granted")
-                                Toast.makeText(context, "USB permission granted", Toast.LENGTH_SHORT).show()
+                                showSuccess("USB permission granted")
                                 updateDeviceInfo(device)
                                 updateButtonStates()
                             } else {
                                 Log.i(TAG, "USB permission denied")
-                                Toast.makeText(context, "USB permission denied", Toast.LENGTH_SHORT).show()
+                                showError("USB permission denied. Please grant permission to use the thermal camera.") {
+                                    findAndRequestPermission()
+                                }
                                 currentDevice = null
                                 updateDeviceInfo(null)
                                 updateButtonStates()
@@ -96,34 +100,33 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
+        binding = ActivityMainBinding.inflate(layoutInflater)
+        setContentView(binding.root)
         Log.i(TAG, "onCreate")
 
         // Initialize USB manager
         usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
-
-        // Initialize UI elements
-        requestPermissionButton = findViewById(R.id.requestPermissionButton)
-        openCameraButton = findViewById(R.id.openCameraButton)
-        manageDevicesButton = findViewById(R.id.manageDevicesButton)
-        addDeviceButton = findViewById(R.id.addDeviceButton)
-        deviceInfoText = findViewById(R.id.deviceInfoText)
         
-        // Set up button click listeners
-        requestPermissionButton.setOnClickListener {
+        // Set up button click listeners using ViewBinding
+        binding.requestPermissionButton.setOnClickListener {
             findAndRequestPermission()
         }
 
-        openCameraButton.setOnClickListener {
+        binding.openCameraButton.setOnClickListener {
             launchCameraActivity()
         }
 
-        manageDevicesButton.setOnClickListener {
+        binding.manageDevicesButton.setOnClickListener {
             showManageDevicesDialog()
         }
 
-        addDeviceButton.setOnClickListener {
+        binding.addDeviceButton.setOnClickListener {
             showAddDeviceDialog()
+        }
+
+        binding.testSuperResolutionButton.setOnClickListener {
+            val intent = Intent(this, TfLiteTestActivity::class.java)
+            startActivity(intent)
         }
 
         // Register for USB permission broadcasts
@@ -149,6 +152,10 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        
+        // Cancel all coroutines to prevent memory leaks
+        scope.cancel()
+        
         try {
             unregisterReceiver(usbPermissionReceiver)
             Log.i(TAG, "Unregistered USB permission receiver")
@@ -160,8 +167,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateDeviceInfo(device: UsbDevice?) {
         Log.i(TAG, "updateDeviceInfo called with device: ${device?.deviceName ?: "null"}")
-        Log.i(TAG, "deviceInfoText view exists: ${deviceInfoText != null}")
-        Log.i(TAG, "deviceInfoText is attached to window: ${deviceInfoText?.isAttachedToWindow ?: false}")
         
         runOnUiThread {
             val info = if (device != null) {
@@ -175,7 +180,7 @@ class MainActivity : AppCompatActivity() {
             }
             
             try {
-                deviceInfoText?.text = info
+                binding.deviceInfoText.text = info
                 Log.i(TAG, "Successfully set device info text")
             } catch (e: Exception) {
                 Log.e(TAG, "Error setting device info text", e)
@@ -191,20 +196,20 @@ class MainActivity : AppCompatActivity() {
         // Update button states based on device and permission status
         if (cameraDevice != null) {
             // We have a compatible device - always enable request permission button
-            requestPermissionButton.isEnabled = true
+            binding.requestPermissionButton.isEnabled = true
             
             // Only enable open camera button if we have permission
             if (usbManager.hasPermission(cameraDevice)) {
-                openCameraButton.isEnabled = true
+                binding.openCameraButton.isEnabled = true
                 Log.i(TAG, "Camera device found and permission granted")
             } else {
-                openCameraButton.isEnabled = false
+                binding.openCameraButton.isEnabled = false
                 Log.i(TAG, "Camera device found but needs permission")
             }
         } else {
             // No compatible device found - disable both buttons
-            requestPermissionButton.isEnabled = false
-            openCameraButton.isEnabled = false
+            binding.requestPermissionButton.isEnabled = false
+            binding.openCameraButton.isEnabled = false
             Log.i(TAG, "No compatible camera device found")
         }
     }
@@ -243,7 +248,7 @@ class MainActivity : AppCompatActivity() {
         // If we have camera permission, proceed with USB permission
         val cameraDevice = findCameraDevice()
         if (cameraDevice == null) {
-            Toast.makeText(this, "No compatible camera found. Please connect your camera.", Toast.LENGTH_LONG).show()
+            showError("No compatible camera found. Please connect your camera.")
             return
         }
 
@@ -274,7 +279,9 @@ class MainActivity : AppCompatActivity() {
             Log.i(TAG, "USB permission request sent")
         } catch (e: Exception) {
             Log.e(TAG, "Error requesting USB permission", e)
-            Toast.makeText(this, "Error requesting USB permission: ${e.message}", Toast.LENGTH_SHORT).show()
+            showError("Error requesting USB permission: ${e.message}") {
+                findAndRequestPermission()
+            }
         }
     }
 
@@ -292,7 +299,7 @@ class MainActivity : AppCompatActivity() {
                     findAndRequestPermission()
                 } else {
                     Log.w(TAG, "Camera permission denied")
-                    Toast.makeText(this, "Camera permission is required to use the thermal camera", Toast.LENGTH_LONG).show()
+                    showError("Camera permission is required to use the thermal camera")
                 }
             }
         }
@@ -313,7 +320,9 @@ class MainActivity : AppCompatActivity() {
         val device = currentDevice
         if (device == null || !usbManager.hasPermission(device)) {
             Log.w(TAG, "Cannot launch camera: device not found or no permission")
-            Toast.makeText(this, "Cannot open camera: device not found or no permission", Toast.LENGTH_SHORT).show()
+            showError("Cannot open camera: device not found or no permission") {
+                findAndRequestPermission()
+            }
             updateButtonStates()
             return
         }
@@ -331,6 +340,18 @@ class MainActivity : AppCompatActivity() {
         return device.vendorId == VENDOR_ID &&
                device.deviceClass == DEVICE_CLASS &&
                device.deviceSubclass == DEVICE_SUBCLASS
+    }
+    
+    private fun showError(message: String, action: (() -> Unit)? = null) {
+        val snackbar = Snackbar.make(binding.root, message, Snackbar.LENGTH_LONG)
+        action?.let { 
+            snackbar.setAction("Retry") { it() }
+        }
+        snackbar.show()
+    }
+    
+    private fun showSuccess(message: String) {
+        Snackbar.make(binding.root, message, Snackbar.LENGTH_SHORT).show()
     }
 
     private fun showManageDevicesDialog() {
@@ -403,10 +424,10 @@ class MainActivity : AppCompatActivity() {
                     // Add the configuration
                     DeviceConfigs.configs = DeviceConfigs.configs + (pid to newConfig)
                     
-                    Toast.makeText(this, "Device configuration added", Toast.LENGTH_SHORT).show()
+                    showSuccess("Device configuration added")
                 } catch (e: Exception) {
                     Log.e(TAG, "Error adding device configuration", e)
-                    Toast.makeText(this, "Invalid input: ${e.message}", Toast.LENGTH_SHORT).show()
+                    showError("Invalid input: ${e.message}")
                 }
             }
             .setNegativeButton("Cancel", null)

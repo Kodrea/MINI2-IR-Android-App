@@ -90,6 +90,55 @@
                     android:layout_marginBottom="8dp"
                     android:text="FFC" />
 
+                <!-- Video Recording Controls -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="8dp"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/recordButton"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginEnd="4dp"
+                        android:layout_weight="1"
+                        android:text="🔴 Record"
+                        android:backgroundTint="#DC143C" />
+
+                    <Button
+                        android:id="@+id/pauseResumeButton"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="4dp"
+                        android:layout_weight="1"
+                        android:text="⏸️ Pause"
+                        android:enabled="false" />
+
+                </LinearLayout>
+
+                <!-- Recording Duration Display -->
+                <TextView
+                    android:id="@+id/recordingDurationText"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="8dp"
+                    android:text="Duration: 00:00"
+                    android:textAlignment="center"
+                    android:textColor="#FF4444"
+                    android:textStyle="bold"
+                    android:visibility="gone" />
+
+                <!-- Capture & Enhance Button -->
+                <Button
+                    android:id="@+id/captureEnhanceButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="8dp"
+                    android:text="📸 Capture &amp; Enhance"
+                    android:backgroundTint="#FF6B35"
+                    android:textStyle="bold" />
+
                 <!-- Palette Controls -->
                 <LinearLayout
                     android:layout_width="match_parent"
@@ -118,6 +167,7 @@
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
+                    android:layout_marginBottom="8dp"
                     android:orientation="horizontal">
 
                     <Button
@@ -135,6 +185,31 @@
                         android:layout_marginStart="4dp"
                         android:layout_weight="1"
                         android:text="Next Scene ▶" />
+                </LinearLayout>
+
+                <!-- Framerate Controls -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/frameRate25Button"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginEnd="4dp"
+                        android:layout_weight="1"
+                        android:text="25 FPS"
+                        android:backgroundTint="#4CAF50" />
+
+                    <Button
+                        android:id="@+id/frameRate50Button"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="4dp"
+                        android:layout_weight="1"
+                        android:text="50 FPS"
+                        android:backgroundTint="#2196F3" />
                 </LinearLayout>
             </LinearLayout>
 

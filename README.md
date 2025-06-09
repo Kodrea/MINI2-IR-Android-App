@@ -1,15 +1,18 @@
-# ircmd_handle Android App
+# MINI2-IR Android App
 
 An Android application for interfacing with MINI2 thermal cameras, supporting various models including MINI2-384, MINI2-256, and MINI2-640.
 
 ## Features
 
 - USB camera connection and management
-- Real-time thermal image display
+- Real-time thermal image display with hardware-accelerated rendering
+- High-performance video recording at native camera framerates (25/50fps)
 - Multiple palette options (White Hot, Sepia, Ironbow, etc.)
 - Scene mode selection
 - Brightness and contrast adjustment
 - FFC (Flat Field Correction) control
+- Raw frame capture for image enhancement
+- Fullscreen viewing mode
 - Support for different MINI2 camera models
 
 ## Requirements
@@ -50,9 +53,32 @@ The project uses Gradle with Kotlin DSL for build configuration. Key configurati
 ## Project Structure
 
 - `/app/src/main/java/` - Kotlin source files
+  - `CameraActivity.kt` - Main camera interface with video recording
+  - `VideoRecorder.kt` - MediaCodec H.264 video encoding
+  - `IrcmdManager.kt` - Camera command interface
+  - `DeviceConfig.kt` - Camera model configurations
 - `/app/src/main/cpp/` - Native C++ code
-- `/app/src/main/res/` - Resource files
-- `/app/src/main/AndroidManifest.xml` - App manifest
+  - `uvc_manager.cpp/h` - UVC camera streaming and direct recording
+  - `ircmd_manager.cpp/h` - Thermal camera command processing
+  - `native-lib.cpp` - JNI bridge functions
+  - `third_party/` - LibUVC, LibUSB, and LibYUV libraries
+- `/app/src/main/res/` - Resource files and UI layouts
+- `/app/src/main/AndroidManifest.xml` - App manifest with USB permissions
+
+## Video Recording Architecture
+
+The app implements a high-performance direct recording pipeline that achieves native camera framerates:
+
+### ✅ **Current Implementation (Direct Pipeline)**
+- **UVC Frame Callback** → Native YUYV→YUV420 conversion → **MediaCodec Encoder**
+- Bypasses Android display pipeline entirely
+- Achieves target 25/50fps recording performance
+- Uses hardware-accelerated color space conversion via LibYUV
+
+### ❌ **Previous Approaches (Performance Issues)**
+- **TextureView.getBitmap()**: ~60ms per frame bottleneck (16fps max)
+- **Surface Recording**: Incompatible with thermal camera TextureView rendering
+- **RGB→YUV Conversion**: Unnecessary color space conversion overhead
 
 ## Dependencies
 
@@ -60,9 +86,10 @@ The project uses Gradle with Kotlin DSL for build configuration. Key configurati
 - AndroidX AppCompat
 - Material Design Components
 - ConstraintLayout
-- RecyclerView
-- Fragment KTX
-- Activity KTX
+- Native Libraries:
+  - LibUVC (USB Video Class)
+  - LibUSB (USB device communication)
+  - LibYUV (Hardware-accelerated color conversion)
 
 ## USB Permissions
 

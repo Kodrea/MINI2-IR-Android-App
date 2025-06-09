@@ -47,7 +47,8 @@ add_library(${CMAKE_PROJECT_NAME} SHARED
         # List C/C++ source files with relative paths to this CMakeLists.txt.
         native-lib.cpp
         uvc_manager.cpp
-        ircmd_manager.cpp)
+        ircmd_manager.cpp
+        camera_function_registry.cpp)
 
 # Add SDK libraries directory
 set(SDK_LIBS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../jniLibs/${ANDROID_ABI})

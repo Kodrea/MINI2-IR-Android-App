@@ -267,6 +267,11 @@ bool IrcmdManager::init(int fileDescriptor, int deviceType) {
     usb_ctx_ = usb_ctx;
     usb_devh_ = usb_devh;
     
+    // Initialize the camera function registry
+    auto& registry = CameraFunctionRegistry::getInstance();
+    registry.initializeAllFunctions();
+    IRCMD_LOGI("Camera function registry initialized");
+    
     is_initialized_ = true;
     IRCMD_LOGI("IrcmdManager initialized successfully");
     return true;
@@ -498,4 +503,56 @@ int IrcmdManager::executeActionFunction(CameraFunction func) {
             IRCMD_LOGE("Unknown action function: %d", func);
             return -1;
     }
+}
+
+// ===== NEW REGISTRY-BASED FUNCTION IMPLEMENTATIONS =====
+
+int IrcmdManager::executeSetFunction(CameraFunctionId functionId, int value) {
+    if (!is_initialized_ || !ircmd_handle_) {
+        IRCMD_LOGE("Cannot execute function: IrcmdManager not initialized");
+        return -2;
+    }
+    
+    IRCMD_LOGI("Executing registry-based SET function ID: %d with value: %d", 
+               static_cast<int>(functionId), value);
+    
+    auto& registry = CameraFunctionRegistry::getInstance();
+    return registry.executeSetFunction(functionId, getCmdHandle(), value);
+}
+
+int IrcmdManager::executeGetFunction(CameraFunctionId functionId, int& outValue) {
+    if (!is_initialized_ || !ircmd_handle_) {
+        IRCMD_LOGE("Cannot execute function: IrcmdManager not initialized");
+        return -2;
+    }
+    
+    IRCMD_LOGI("Executing registry-based GET function ID: %d", static_cast<int>(functionId));
+    
+    auto& registry = CameraFunctionRegistry::getInstance();
+    return registry.executeGetFunction(functionId, getCmdHandle(), &outValue);
+}
+
+int IrcmdManager::executeSetFunction2(CameraFunctionId functionId, int value1, int value2) {
+    if (!is_initialized_ || !ircmd_handle_) {
+        IRCMD_LOGE("Cannot execute function: IrcmdManager not initialized");
+        return -2;
+    }
+    
+    IRCMD_LOGI("Executing registry-based SET function 2 ID: %d with values: %d, %d", 
+               static_cast<int>(functionId), value1, value2);
+    
+    auto& registry = CameraFunctionRegistry::getInstance();
+    return registry.executeSetFunction2(functionId, getCmdHandle(), value1, value2);
+}
+
+int IrcmdManager::executeActionFunction(CameraFunctionId functionId) {
+    if (!is_initialized_ || !ircmd_handle_) {
+        IRCMD_LOGE("Cannot execute function: IrcmdManager not initialized");
+        return -2;
+    }
+    
+    IRCMD_LOGI("Executing registry-based ACTION function ID: %d", static_cast<int>(functionId));
+    
+    auto& registry = CameraFunctionRegistry::getInstance();
+    return registry.executeActionFunction(functionId, getCmdHandle());
 } 

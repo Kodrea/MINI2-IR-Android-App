@@ -1,4 +1,6 @@
-# IRCMD SDK Integration Strategy
+# [ARCHIVED] IRCMD SDK Integration Strategy
+
+> **Note**: This document has been archived. Current project planning uses `PROJECT_CONTEXT.md`, `FEATURE_TRACKER.md`, and individual PRD documents in `/docs/`.
 
 ## File Structure
 

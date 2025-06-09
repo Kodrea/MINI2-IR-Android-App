@@ -67,8 +67,9 @@ google-services.json
 # Android Profiling
 *.hprof
 
-# Compiled native libraries
+# Compiled native libraries (exclude jniLibs which contain precompiled SDK libraries)
 *.so
+!app/src/main/jniLibs/**/*.so
 
 # Log Files
 *.log
@@ -84,3 +85,4 @@ captures/
 
 # Windows
 Thumbs.db
+myenv/

@@ -22,6 +22,12 @@ import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.Toast
+import android.net.Uri
+import android.os.Environment
+import android.provider.MediaStore
+import java.io.OutputStream
+import java.text.SimpleDateFormat
+import java.util.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.constraintlayout.widget.ConstraintLayout
 import androidx.constraintlayout.widget.ConstraintLayout.LayoutParams
@@ -48,6 +54,23 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import android.view.LayoutInflater
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
+import org.tensorflow.lite.Interpreter
+import android.graphics.Bitmap
+import java.io.FileInputStream
+import java.nio.ByteBuffer
+import java.nio.channels.FileChannel
+import java.nio.ByteOrder
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlin.math.*
+import com.example.ircmd_handle.databinding.ActivityCameraBinding
+import com.google.android.material.snackbar.Snackbar
+import kotlinx.coroutines.*
+import kotlinx.coroutines.delay
+import androidx.lifecycle.lifecycleScope
+import kotlin.math.pow
 
 class CameraActivity : AppCompatActivity() {
 
@@ -60,6 +83,8 @@ class CameraActivity : AppCompatActivity() {
         private const val ACTION_USB_PERMISSION = "android.hardware.usb.action.USB_PERMISSION"
         private const val PERMISSION_REQUEST_TIMEOUT = 5000L // 5 seconds
         private const val CAMERA_PERMISSION_REQUEST_CODE = 1001
+        private const val STORAGE_PERMISSION_REQUEST_CODE = 1002
+        private const val AUDIO_PERMISSION_REQUEST_CODE = 1003
         
         // Thermal Camera Co.,Ltd device IDs
         private const val VENDOR_ID = 13428  // 0x3474
@@ -117,6 +142,29 @@ class CameraActivity : AppCompatActivity() {
         private var isHandlingUsbAttachment = false
     }
 
+    // ViewBinding
+    private lateinit var binding: ActivityCameraBinding
+    
+    // TensorFlow Lite for super resolution
+    private var fsrcnnInterpreter: Interpreter? = null
+    
+    // Video recording
+    private lateinit var videoRecorder: VideoRecorder
+    private var recordingDurationUpdateJob: Job? = null
+    private var displaySurface: Surface? = null
+    private var recordingSurface: Surface? = null
+    
+    // Native methods for raw frame capture
+    private external fun nativeSetCaptureFlag(capture: Boolean)
+    private external fun nativeHasCapturedFrame(): Boolean
+    private external fun nativeGetCapturedFrame(): ByteArray?
+    
+    // Native methods for UVC framerate control
+    private external fun nativeGetSupportedFrameRates(width: Int, height: Int): IntArray?
+    private external fun nativeSetFrameRate(width: Int, height: Int, fps: Int): Boolean
+    private external fun nativeGetCurrentFrameRate(): Int
+    private external fun nativeEnumerateAllFrameRates()
+    
     private lateinit var usbManager: UsbManager
     private var deviceConnection: UsbDeviceConnection? = null
     private var currentDevice: UsbDevice? = null
@@ -147,8 +195,9 @@ class CameraActivity : AppCompatActivity() {
                             openUsbCamera(device)
                         } else {
                             Log.i(TAG, "usbPermissionReceiver: Permission denied")
-                            Toast.makeText(context, "USB permission denied", Toast.LENGTH_SHORT).show()
-                            finish()
+                            showError("USB permission denied. Camera cannot be opened.") {
+                                finish()
+                            }
                         }
                     } else {
                         Log.w(TAG, "usbPermissionReceiver: Device mismatch or null. Current: $currentDevice, Received: $device")
@@ -165,79 +214,24 @@ class CameraActivity : AppCompatActivity() {
         }
     }
 
-    private val permissionCheckHandler = Handler(Looper.getMainLooper())
-    private val permissionCheckRunnable = object : Runnable {
-        override fun run() {
-            val currentTime = System.currentTimeMillis()
-            if (currentTime - permissionRequestTime > PERMISSION_REQUEST_TIMEOUT) {
-                Log.w(TAG, "Permission request timed out after ${PERMISSION_REQUEST_TIMEOUT}ms")
-                Toast.makeText(this@CameraActivity, "USB permission request timed out", Toast.LENGTH_SHORT).show()
-                finish()
-                return
-            }
-
-            // Check if we got permission while waiting
-            currentDevice?.let { device ->
-                if (usbManager.hasPermission(device)) {
-                    Log.i(TAG, "Permission granted while waiting")
-                    openUsbCamera(device)
-                    return
-                }
-            }
-
-            // Keep checking
-            permissionCheckHandler.postDelayed(this, 1000)
-        }
-    }
+    // Use WeakReference to prevent memory leaks
+    private var permissionCheckJob: Job? = null
 
     // Add IrcmdManager instance
     private lateinit var ircmdManager: IrcmdManager
 
-    private lateinit var ffcButton: Button
-    private lateinit var brightnessSlider: SeekBar
-    private lateinit var contrastSlider: SeekBar
-    private lateinit var setBrightnessButton: Button
-    private lateinit var setContrastButton: Button
-    private lateinit var fullscreenButton: ImageButton
-    private lateinit var controlsContainer: NestedScrollView
-    private lateinit var cameraContainer: FrameLayout
-    private lateinit var cameraView: TextureView
     private var isFullscreen = false
     private lateinit var windowInsetsController: WindowInsetsControllerCompat
     private var originalCameraParams: ConstraintLayout.LayoutParams? = null
 
-    // Add new UI element properties
-    private lateinit var noiseReductionSlider: SeekBar
-    private lateinit var setNoiseReductionButton: Button
-    private lateinit var timeNoiseReductionSlider: SeekBar
-    private lateinit var setTimeNoiseReductionButton: Button
-    private lateinit var spaceNoiseReductionSlider: SeekBar
-    private lateinit var setSpaceNoiseReductionButton: Button
-    private lateinit var detailEnhancementSlider: SeekBar
-    private lateinit var setDetailEnhancementButton: Button
-    private lateinit var globalContrastSlider: SeekBar
-    private lateinit var setGlobalContrastButton: Button
-
-    private lateinit var nextPaletteButton: Button
-    private lateinit var prevPaletteButton: Button
     private var currentPaletteIndex = 0
-    
-    private lateinit var nextSceneModeButton: Button
-    private lateinit var prevSceneModeButton: Button
     private var currentSceneModeIndex = 0
-    
-    private lateinit var lastCommandText: TextView
-
-    // Add properties for expandable groups
-    private lateinit var imageSettingsHeader: TextView
-    private lateinit var imageSettingsContent: LinearLayout
-    private lateinit var noiseReductionHeader: TextView
-    private lateinit var noiseReductionContent: LinearLayout
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Log.i(TAG, "onCreate: Starting CameraActivity initialization")
-        setContentView(R.layout.activity_camera)
+        binding = ActivityCameraBinding.inflate(layoutInflater)
+        setContentView(binding.root)
         
         // Hide the action bar by default
         supportActionBar?.hide()
@@ -261,9 +255,9 @@ class CameraActivity : AppCompatActivity() {
                 // Update button behavior based on system bars visibility
                 if (windowInsets.isVisible(WindowInsetsCompat.Type.navigationBars()) ||
                     windowInsets.isVisible(WindowInsetsCompat.Type.statusBars())) {
-                    fullscreenButton.setImageResource(R.drawable.ic_fullscreen)
+                    binding.fullscreenButton.setImageResource(R.drawable.ic_fullscreen)
                 } else {
-                    fullscreenButton.setImageResource(R.drawable.ic_fullscreen_exit)
+                    binding.fullscreenButton.setImageResource(R.drawable.ic_fullscreen_exit)
                 }
                 ViewCompat.onApplyWindowInsets(view, windowInsets)
             }
@@ -271,119 +265,96 @@ class CameraActivity : AppCompatActivity() {
             // Initialize IrcmdManager
             ircmdManager = IrcmdManager.getInstance()
             
-            // Initialize views with explicit type parameters
-            try {
-                fullscreenButton = findViewById<ImageButton>(R.id.fullscreenButton)
-                controlsContainer = findViewById<NestedScrollView>(R.id.controlsContainer)
-                cameraContainer = findViewById<FrameLayout>(R.id.cameraContainer)
-                cameraView = findViewById<TextureView>(R.id.cameraView)
-                lastCommandText = findViewById<TextView>(R.id.lastCommandText)
-                
-                Log.i(TAG, "onCreate: Found all views - fullscreenButton: ${fullscreenButton != null}, " +
-                          "controlsContainer: ${controlsContainer != null}, " +
-                          "cameraContainer: ${cameraContainer != null}, " +
-                          "cameraView: ${cameraView != null}, " +
-                          "lastCommandText: ${lastCommandText != null}")
-            } catch (e: Exception) {
-                Log.e(TAG, "onCreate: Error finding views", e)
-                throw e
-            }
+            // Views are now available through binding
+            Log.i(TAG, "onCreate: Views initialized through ViewBinding")
             
             // Store original camera container parameters
-            originalCameraParams = cameraContainer.layoutParams as ConstraintLayout.LayoutParams
+            originalCameraParams = binding.cameraContainer.layoutParams as ConstraintLayout.LayoutParams
             
-            fullscreenButton.setOnClickListener {
+            // Set up UI click listeners using ViewBinding
+            binding.fullscreenButton.setOnClickListener {
                 toggleFullscreen()
             }
 
-            // Initialize FFC button
-            ffcButton = findViewById(R.id.ffcButton)
-            ffcButton.setOnClickListener {
+            binding.ffcButton.setOnClickListener {
                 performFFC()
             }
 
-            // Initialize brightness controls
-            brightnessSlider = findViewById(R.id.brightnessSlider)
-            setBrightnessButton = findViewById(R.id.setBrightnessButton)
-            setBrightnessButton.setOnClickListener {
-                setBrightness(brightnessSlider.progress)
+            binding.captureEnhanceButton.setOnClickListener {
+                captureAndEnhanceFrame()
             }
 
-            // Initialize contrast controls
-            contrastSlider = findViewById(R.id.contrastSlider)
-            setContrastButton = findViewById(R.id.setContrastButton)
-            setContrastButton.setOnClickListener {
-                setContrast(contrastSlider.progress)
+            binding.recordButton.setOnClickListener {
+                if (videoRecorder.isRecording()) {
+                    stopVideoRecording()
+                } else {
+                    startVideoRecording()
+                }
             }
 
-            // Initialize noise reduction controls
-            noiseReductionSlider = findViewById(R.id.noiseReductionSlider)
-            setNoiseReductionButton = findViewById(R.id.setNoiseReductionButton)
-            setNoiseReductionButton.setOnClickListener {
-                setNoiseReduction(noiseReductionSlider.progress)
+            binding.pauseResumeButton.setOnClickListener {
+                if (videoRecorder.isPaused()) {
+                    resumeVideoRecording()
+                } else {
+                    pauseVideoRecording()
+                }
             }
 
-            // Initialize time noise reduction controls
-            timeNoiseReductionSlider = findViewById(R.id.timeNoiseReductionSlider)
-            setTimeNoiseReductionButton = findViewById(R.id.setTimeNoiseReductionButton)
-            setTimeNoiseReductionButton.setOnClickListener {
-                setTimeNoiseReduction(timeNoiseReductionSlider.progress)
+            binding.setBrightnessButton.setOnClickListener {
+                setBrightness(binding.brightnessSlider.progress)
             }
 
-            // Initialize space noise reduction controls
-            spaceNoiseReductionSlider = findViewById(R.id.spaceNoiseReductionSlider)
-            setSpaceNoiseReductionButton = findViewById(R.id.setSpaceNoiseReductionButton)
-            setSpaceNoiseReductionButton.setOnClickListener {
-                setSpaceNoiseReduction(spaceNoiseReductionSlider.progress)
+            binding.setContrastButton.setOnClickListener {
+                setContrast(binding.contrastSlider.progress)
             }
 
-            // Initialize detail enhancement controls
-            detailEnhancementSlider = findViewById(R.id.detailEnhancementSlider)
-            setDetailEnhancementButton = findViewById(R.id.setDetailEnhancementButton)
-            setDetailEnhancementButton.setOnClickListener {
-                setDetailEnhancement(detailEnhancementSlider.progress)
+            binding.setNoiseReductionButton.setOnClickListener {
+                setNoiseReduction(binding.noiseReductionSlider.progress)
             }
 
-            // Initialize global contrast controls
-            globalContrastSlider = findViewById(R.id.globalContrastSlider)
-            setGlobalContrastButton = findViewById(R.id.setGlobalContrastButton)
-            setGlobalContrastButton.setOnClickListener {
-                setGlobalContrast(globalContrastSlider.progress)
+            binding.setTimeNoiseReductionButton.setOnClickListener {
+                setTimeNoiseReduction(binding.timeNoiseReductionSlider.progress)
             }
 
-            // Initialize palette control buttons
-            nextPaletteButton = findViewById(R.id.nextPaletteButton)
-            prevPaletteButton = findViewById(R.id.prevPaletteButton)
+            binding.setSpaceNoiseReductionButton.setOnClickListener {
+                setSpaceNoiseReduction(binding.spaceNoiseReductionSlider.progress)
+            }
+
+            binding.setDetailEnhancementButton.setOnClickListener {
+                setDetailEnhancement(binding.detailEnhancementSlider.progress)
+            }
+
+            binding.setGlobalContrastButton.setOnClickListener {
+                setGlobalContrast(binding.globalContrastSlider.progress)
+            }
             
-            nextPaletteButton.setOnClickListener {
+            binding.nextPaletteButton.setOnClickListener {
                 setPalette((currentPaletteIndex + 1).coerceIn(MIN_PALETTE_INDEX, MAX_PALETTE_INDEX))
             }
             
-            prevPaletteButton.setOnClickListener {
+            binding.prevPaletteButton.setOnClickListener {
                 setPalette((currentPaletteIndex - 1).coerceIn(MIN_PALETTE_INDEX, MAX_PALETTE_INDEX))
             }
-
-            // Initialize scene mode control buttons
-            nextSceneModeButton = findViewById(R.id.nextSceneModeButton)
-            prevSceneModeButton = findViewById(R.id.prevSceneModeButton)
             
-            nextSceneModeButton.setOnClickListener {
+            binding.nextSceneModeButton.setOnClickListener {
                 setSceneMode((currentSceneModeIndex + 1).coerceIn(MIN_SCENE_MODE_INDEX, MAX_SCENE_MODE_INDEX))
             }
             
-            prevSceneModeButton.setOnClickListener {
+            binding.prevSceneModeButton.setOnClickListener {
                 setSceneMode((currentSceneModeIndex - 1).coerceIn(MIN_SCENE_MODE_INDEX, MAX_SCENE_MODE_INDEX))
             }
-
-            // Initialize expandable groups
-            imageSettingsHeader = findViewById(R.id.imageSettingsHeader)
-            imageSettingsContent = findViewById(R.id.imageSettingsContent)
-            noiseReductionHeader = findViewById(R.id.noiseReductionHeader)
-            noiseReductionContent = findViewById(R.id.noiseReductionContent)
+            
+            binding.frameRate25Button.setOnClickListener {
+                setFrameRate(25)
+            }
+            
+            binding.frameRate50Button.setOnClickListener {
+                setFrameRate(50)
+            }
 
             // Set up expandable groups
-            setupExpandableGroup(imageSettingsHeader, imageSettingsContent)
-            setupExpandableGroup(noiseReductionHeader, noiseReductionContent)
+            setupExpandableGroup(binding.imageSettingsHeader, binding.imageSettingsContent)
+            setupExpandableGroup(binding.noiseReductionHeader, binding.noiseReductionContent)
 
             // 2) Get the system UsbManager
             usbManager = getSystemService(UsbManager::class.java)
@@ -404,8 +375,9 @@ class CameraActivity : AppCompatActivity() {
                 Log.i(TAG, "onCreate: Successfully registered USB permission receiver")
             } catch (e: Exception) {
                 Log.e(TAG, "onCreate: Failed to register receiver", e)
-                Toast.makeText(this, "Failed to register USB receiver: ${e.message}", Toast.LENGTH_LONG).show()
-                finish()
+                showError("Failed to register USB receiver: ${e.message}") {
+                    finish()
+                }
                 return
             }
 
@@ -430,10 +402,18 @@ class CameraActivity : AppCompatActivity() {
                     }
                 }
             }
+            
+            // Initialize TensorFlow Lite model for super resolution
+            initializeSuperResolutionModel()
+            
+            // Initialize video recorder
+            initializeVideoRecorder()
+            
         } catch (e: Exception) {
             Log.e(TAG, "Error in onCreate", e)
-            Toast.makeText(this, "Error initializing camera: ${e.message}", Toast.LENGTH_LONG).show()
-            finish()
+            showError("Error initializing camera: ${e.message}") {
+                finish()
+            }
         }
     }
 
@@ -490,7 +470,7 @@ class CameraActivity : AppCompatActivity() {
                 // Add margins to ensure it's not cut off
                 setMargins(0, 48, 0, 48)
             }
-            cameraContainer.layoutParams = params
+            binding.cameraContainer.layoutParams = params
             
             // Update TextureView to fill the container while maintaining aspect ratio
             val textureParams = FrameLayout.LayoutParams(
@@ -499,7 +479,7 @@ class CameraActivity : AppCompatActivity() {
             ).apply {
                 gravity = android.view.Gravity.CENTER
             }
-            cameraView.layoutParams = textureParams
+            binding.cameraView.layoutParams = textureParams
             
             Log.i(TAG, "Fullscreen dimensions - Screen: ${screenWidth}x${screenHeight}, Video: ${targetWidth}x${targetHeight}")
             
@@ -510,13 +490,19 @@ class CameraActivity : AppCompatActivity() {
                 0
             ).apply {
                 topToTop = ConstraintLayout.LayoutParams.PARENT_ID
-                bottomToTop = controlsContainer.id
+                bottomToTop = binding.controlsContainer.id
                 startToStart = ConstraintLayout.LayoutParams.PARENT_ID
                 endToEnd = ConstraintLayout.LayoutParams.PARENT_ID
                 // Add top margin to ensure it's not cut off
                 topMargin = 48
+                
+                // Restore the camera's aspect ratio if we have dimensions
+                val dimensions = nativeGetCameraDimensions()
+                if (dimensions != null) {
+                    dimensionRatio = "${dimensions.first}:${dimensions.second}"
+                }
             }
-            cameraContainer.layoutParams = params
+            binding.cameraContainer.layoutParams = params
             
             val textureParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
@@ -524,7 +510,7 @@ class CameraActivity : AppCompatActivity() {
             ).apply {
                 gravity = android.view.Gravity.CENTER
             }
-            cameraView.layoutParams = textureParams
+            binding.cameraView.layoutParams = textureParams
         }
     }
 
@@ -539,9 +525,69 @@ class CameraActivity : AppCompatActivity() {
     private fun getDeviceConfig(device: UsbDevice): DeviceConfig? {
         return DeviceConfigs.configs[device.productId]
     }
+    
+    private fun showError(message: String, action: (() -> Unit)? = null) {
+        val snackbar = Snackbar.make(binding.root, message, Snackbar.LENGTH_LONG)
+        action?.let { 
+            snackbar.setAction("Retry") { it() }
+        }
+        snackbar.show()
+    }
+    
+    private fun showSuccess(message: String) {
+        Snackbar.make(binding.root, message, Snackbar.LENGTH_SHORT).show()
+    }
+    
+    private fun executeCameraCommand(
+        commandName: String,
+        value: Int,
+        operation: suspend () -> Int
+    ) {
+        if (!ircmdManager.isInitialized()) {
+            Log.e(TAG, "$commandName failed: Camera not initialized")
+            updateLastCommand(commandName, value, false, "Camera not initialized", IrcmdManager.ERROR_NOT_INITIALIZED)
+            showError("$commandName failed: Camera not initialized")
+            return
+        }
+
+        lifecycleScope.launch {
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    operation()
+                }
+                
+                when (result) {
+                    IrcmdManager.ERROR_SUCCESS -> {
+                        Log.i(TAG, "$commandName set to $value successfully")
+                        updateLastCommand(commandName, value, true)
+                        showSuccess("$commandName set to $value")
+                    }
+                    IrcmdManager.ERROR_NOT_INITIALIZED -> {
+                        Log.e(TAG, "$commandName failed: Camera not initialized (code: $result)")
+                        updateLastCommand(commandName, value, false, "Camera not initialized", result)
+                        showError("$commandName failed: Camera not initialized")
+                    }
+                    else -> {
+                        val errorMsg = ircmdManager.getLastErrorMessage()
+                        Log.e(TAG, "$commandName failed: $errorMsg (code: $result)")
+                        updateLastCommand(commandName, value, false, errorMsg, result)
+                        showError("$commandName failed: $errorMsg") {
+                            executeCameraCommand(commandName, value, operation)
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error executing $commandName", e)
+                updateLastCommand(commandName, value, false, e.message ?: "Unknown error", -99)
+                showError("$commandName failed: ${e.message}") {
+                    executeCameraCommand(commandName, value, operation)
+                }
+            }
+        }
+    }
 
     private fun handleIncomingUsbIntent(intent: Intent) {
-        Log.i(TAG, "handleIncomingUsbIntent: Starting USB intent handling")
+        Log.i(TAG, "handleIncomingUsbIntent: Starting USB intent handling for action: ${intent.action}")
         
         // Extract the UsbDevice from either the action or extras
         val device: UsbDevice? = when {
@@ -565,26 +611,47 @@ class CameraActivity : AppCompatActivity() {
         }
 
         if (device != null) {
+            Log.i(TAG, "Device detected - VID: 0x${device.vendorId.toString(16)}, PID: 0x${device.productId.toString(16)}, Class: ${device.deviceClass}, Subclass: ${device.deviceSubclass}")
+            
             // Store the device and update display immediately
             currentDevice = device
             updateDeviceInfo(device)
             
+            // Check if this is our supported device
+            if (!isOurDevice(device)) {
+                Log.w(TAG, "Device is not compatible with this app")
+                showError("This device is not compatible with the thermal camera app.") {
+                    finish()
+                }
+                return
+            }
+            
+            // Check if we have a configuration for this device
+            val deviceConfig = getDeviceConfig(device)
+            if (deviceConfig == null) {
+                Log.w(TAG, "No configuration found for device PID: 0x${device.productId.toString(16)}")
+                showError("Camera model not recognized. Please add device configuration in Main Activity.") {
+                    // Go back to main activity to add device config
+                    finish()
+                }
+                return
+            }
+            
+            Log.i(TAG, "Device configuration found: ${deviceConfig.width}x${deviceConfig.height} @ ${deviceConfig.fps}fps")
+            
             // Check if we already have permission
             if (usbManager.hasPermission(device)) {
-                if (isOurDevice(device)) {
-                    // Only open camera if we're not handling a USB attachment
-                    // This prevents automatic streaming when the app is launched via USB attachment
-                    if (!isHandlingUsbAttachment) {
-                        openUsbCamera(device)
-                    } else {
-                        // For USB attachment, just show a message that the device is ready
-                        Toast.makeText(this, "Camera ready. Press 'Open Camera' to start streaming.", Toast.LENGTH_LONG).show()
-                    }
-                }
+                Log.i(TAG, "Device permission already granted, opening camera")
+                openUsbCamera(device)
             } else {
+                Log.i(TAG, "Device permission not granted, requesting permission")
                 // Request USB permission
                 requestUsbPermission(device)
             }
+        } else {
+            Log.w(TAG, "No USB device found in intent, trying to find device manually")
+            // Try to find the device manually as a fallback
+            findAndConnectCamera()
         }
     }
 
@@ -602,35 +669,50 @@ class CameraActivity : AppCompatActivity() {
     private fun openUsbCamera(device: UsbDevice) {
         val deviceConfig = DeviceConfigs.configs[device.productId]
         if (deviceConfig == null) {
-            Log.e(TAG, "No configuration found for device ${device.productId}")
+            Log.e(TAG, "No configuration found for device PID: 0x${device.productId.toString(16)}")
+            showError("Unsupported camera model. Please add device configuration.") {
+                finish()
+            }
             return
         }
 
         val usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
-        val permissionIntent = PendingIntent.getBroadcast(this, 0, Intent(ACTION_USB_PERMISSION), PendingIntent.FLAG_IMMUTABLE)
-        usbManager.requestPermission(device, permissionIntent)
 
+        // This method should only be called when permission is already granted
         if (!usbManager.hasPermission(device)) {
-            Log.e(TAG, "No permission to access USB device")
+            Log.e(TAG, "openUsbCamera called without USB permission")
+            showError("USB permission required. Please grant permission and try again.") {
+                requestUsbPermission(device)
+            }
             return
         }
 
         val connection = usbManager.openDevice(device)
         if (connection == null) {
-            Log.e(TAG, "Could not open connection")
+            Log.e(TAG, "Could not open USB device connection")
+            showError("Failed to connect to camera. Please check USB connection and try again.") {
+                // Retry opening the camera
+                openUsbCamera(device)
+            }
             return
         }
 
         try {
             val fd = connection.fileDescriptor
             if (fd == -1) {
-                Log.e(TAG, "Invalid file descriptor")
+                Log.e(TAG, "Invalid file descriptor from USB connection")
+                showError("Camera connection error. Please disconnect and reconnect the USB device.") {
+                    finish()
+                }
                 return
             }
 
             // Pass the device configuration to native code
             if (!nativeOpenUvcCamera(fd, deviceConfig.width, deviceConfig.height, deviceConfig.fps)) {
-                Log.e(TAG, "Failed to open UVC camera")
+                Log.e(TAG, "Failed to initialize UVC camera with native library")
+                showError("Camera initialization failed. Please check device compatibility.") {
+                    finish()
+                }
                 return
             }
 
@@ -640,39 +722,101 @@ class CameraActivity : AppCompatActivity() {
             // Initialize IrcmdManager with the device configuration
             val ircmdManager = IrcmdManager.getInstance()
             if (!ircmdManager.init(fd, deviceConfig.deviceType)) {
-                Log.e(TAG, "Failed to initialize IrcmdManager")
+                Log.e(TAG, "Failed to initialize thermal camera control interface")
+                showError("Thermal camera controls failed to initialize. Basic video streaming may still work.") {
+                    // Allow continuing with just video streaming
+                }
                 return
             }
-            Log.i(TAG, "IrcmdManager initialized with device type: ${deviceConfig.deviceType}")
+            Log.i(TAG, "Camera initialized successfully with device type: ${deviceConfig.deviceType}")
+            
+            // Test registry functionality
+            logRegistryStatus()
+            
+            // Enumerate all supported frame rates
+            nativeEnumerateAllFrameRates()
+            
+            // Get supported frame rates for current resolution
+            val supportedFps = nativeGetSupportedFrameRates(deviceConfig.width, deviceConfig.height)
+            if (supportedFps != null && supportedFps.isNotEmpty()) {
+                Log.i(TAG, "📊 Supported frame rates for ${deviceConfig.width}x${deviceConfig.height}: ${supportedFps.joinToString(", ")}")
+                
+                // Check if current fps is actually supported
+                if (!supportedFps.contains(deviceConfig.fps)) {
+                    Log.w(TAG, "⚠️ Configured FPS ${deviceConfig.fps} not in supported list. Using first supported: ${supportedFps[0]}")
+                    // Update config to use first supported framerate
+                    val updatedConfig = deviceConfig.copy(fps = supportedFps[0])
+                    DeviceConfigs.configs = DeviceConfigs.configs + (device.productId to updatedConfig)
+                    updateFrameRateButtonColors(supportedFps[0])
+                } else {
+                    updateFrameRateButtonColors(deviceConfig.fps)
+                }
+            } else {
+                Log.w(TAG, "⚠️ Could not query supported frame rates")
+                updateFrameRateButtonColors(deviceConfig.fps)
+            }
+            
+            showSuccess("Camera connected successfully!")
 
         } catch (e: Exception) {
             Log.e(TAG, "Error opening camera", e)
+            showError("Camera initialization error: ${e.message}") {
+                finish()
+            }
         }
     }
 
     private fun setupVideoSurface() {
+        // Force software rendering to avoid Vulkan issues
+        binding.cameraView.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
+        Log.i(TAG, "Set TextureView to software rendering to avoid Vulkan issues")
+        
+        // Configure TextureView for thermal camera format
+        binding.cameraView.isOpaque = false
+        
+        // Try to set a compatible surface format
+        try {
+            // Get current surface texture and configure it
+            val surfaceTexture = binding.cameraView.surfaceTexture
+            surfaceTexture?.setDefaultBufferSize(384, 288) // Default thermal camera size
+            Log.i(TAG, "Configured surface texture with default buffer size 384x288")
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not configure surface texture: ${e.message}")
+        }
+        
         // Set up a surface texture listener
-        cameraView.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+        binding.cameraView.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
             override fun onSurfaceTextureAvailable(texture: SurfaceTexture, width: Int, height: Int) {
+                Log.i(TAG, "Surface texture available: ${width}x${height}")
+                
                 // Start streaming when surface is available
                 val surface = Surface(texture)
+                Log.i(TAG, "Created surface from texture, starting native streaming...")
+                
                 if (nativeStartStreaming(surface)) {
-                    Log.i(TAG, "UVC streaming started successfully")
+                    Log.i(TAG, "✅ UVC streaming started successfully")
                     
                     // Get the camera dimensions from native code
                     val dimensions = nativeGetCameraDimensions()
                     if (dimensions != null) {
+                        Log.i(TAG, "✅ Camera dimensions: ${dimensions.first}x${dimensions.second}")
+                        
                         // Update the container's aspect ratio to match camera
-                        val params = cameraContainer.layoutParams as ConstraintLayout.LayoutParams
+                        val params = binding.cameraContainer.layoutParams as ConstraintLayout.LayoutParams
                         if (!isFullscreen) {
                             // Only set aspect ratio in portrait mode
                             params.dimensionRatio = "${dimensions.first}:${dimensions.second}"
-                            cameraContainer.layoutParams = params
+                            binding.cameraContainer.layoutParams = params
+                            Log.i(TAG, "Updated container aspect ratio to ${dimensions.first}:${dimensions.second}")
                         }
-                        Log.i(TAG, "Camera dimensions: ${dimensions.first}x${dimensions.second}")
+                    } else {
+                        Log.w(TAG, "Could not get camera dimensions from native code")
                     }
                 } else {
-                    Log.e(TAG, "Failed to start UVC streaming")
+                    Log.e(TAG, "❌ Failed to start UVC streaming - check USB connection and permissions")
+                    showError("Failed to start camera streaming") {
+                        finish()
+                    }
                 }
             }
             
@@ -696,6 +840,9 @@ class CameraActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         
+        // Cancel permission check job to prevent memory leaks
+        permissionCheckJob?.cancel()
+        
         // Stop streaming if it's active
         nativeStopStreaming()
         
@@ -709,15 +856,24 @@ class CameraActivity : AppCompatActivity() {
         deviceConnection?.close()
         deviceConnection = null
         
-        // Clean up handler
-        permissionCheckHandler.removeCallbacks(permissionCheckRunnable)
-        
         // Unregister receiver
         try {
             unregisterReceiver(usbPermissionReceiver)
         } catch (ignored: IllegalArgumentException) {
             // Receiver was already unregistered
         }
+        
+        // Clean up TensorFlow Lite interpreter
+        fsrcnnInterpreter?.close()
+        fsrcnnInterpreter = null
+        
+        // Stop any ongoing video recording
+        if (::videoRecorder.isInitialized && videoRecorder.isRecording()) {
+            videoRecorder.stopRecording()
+        }
+        
+        // Cancel recording duration updates
+        recordingDurationUpdateJob?.cancel()
     }
 
     /**
@@ -738,8 +894,9 @@ class CameraActivity : AppCompatActivity() {
         val deviceList = usbManager.deviceList
         
         if (deviceList.isEmpty()) {
-            Toast.makeText(this, "No USB devices found", Toast.LENGTH_SHORT).show()
-            finish()
+            showError("No USB devices found") {
+                finish()
+            }
             return
         }
         
@@ -759,8 +916,9 @@ class CameraActivity : AppCompatActivity() {
             }
         }
         
-        Toast.makeText(this, "No compatible camera found", Toast.LENGTH_SHORT).show()
-        finish()
+        showError("No compatible camera found") {
+            finish()
+        }
     }
 
     private fun updateLastCommand(command: String, value: Int, success: Boolean = true, errorMessage: String? = null, errorCode: Int? = null) {
@@ -770,7 +928,7 @@ class CameraActivity : AppCompatActivity() {
                 val codeText = if (errorCode != null) " (code: $errorCode)" else ""
                 " - $errorMessage$codeText"
             } else ""
-            lastCommandText.text = "Last Command: $command = $value ($status$errorText)"
+            binding.lastCommandText.text = "Last Command: $command = $value ($status$errorText)"
         }
     }
 
@@ -782,108 +940,98 @@ class CameraActivity : AppCompatActivity() {
         }
 
         // Disable button during FFC
-        ffcButton.isEnabled = false
-        ffcButton.text = "FFC in progress..."
+        binding.ffcButton.isEnabled = false
+        binding.ffcButton.text = "FFC in progress..."
 
-        // Run FFC in background thread
-        Thread {
+        // Use lifecycleScope to run FFC operation
+        lifecycleScope.launch {
             try {
-                val result = ircmdManager.performFFC()
+                val result = withContext(Dispatchers.IO) {
+                    ircmdManager.performFFC()
+                }
                 
-                // Update UI on main thread
-                runOnUiThread {
-                    ffcButton.isEnabled = true
-                    ffcButton.text = "FFC"
-                    
-                    when (result) {
-                        IrcmdManager.ERROR_SUCCESS -> {
-                            updateLastCommand("FFC", 0, true)
+                // UI updates automatically happen on main thread
+                binding.ffcButton.isEnabled = true
+                binding.ffcButton.text = "FFC"
+                
+                when (result) {
+                    IrcmdManager.ERROR_SUCCESS -> {
+                        updateLastCommand("FFC", 0, true)
+                        showSuccess("FFC completed successfully")
+                    }
+                    IrcmdManager.ERROR_NOT_INITIALIZED -> {
+                        Log.e(TAG, "FFC failed: Camera not initialized (code: $result)")
+                        updateLastCommand("FFC", 0, false, "Camera not initialized", result)
+                        showError("FFC failed: Camera not initialized")
+                    }
+                    IrcmdManager.ERROR_USB_WRITE -> {
+                        Log.e(TAG, "FFC failed: USB write error (code: $result)")
+                        updateLastCommand("FFC", 0, false, "Failed to send FFC command", result)
+                        showError("FFC failed: USB communication error") {
+                            performFFC()
                         }
-                        IrcmdManager.ERROR_NOT_INITIALIZED -> {
-                            Log.e(TAG, "FFC failed: Camera not initialized (code: $result)")
-                            updateLastCommand("FFC", 0, false, "Camera not initialized", result)
-                        }
-                        IrcmdManager.ERROR_USB_WRITE -> {
-                            Log.e(TAG, "FFC failed: USB write error (code: $result)")
-                            updateLastCommand("FFC", 0, false, "Failed to send FFC command", result)
-                        }
-                        else -> {
-                            Log.e(TAG, "FFC failed: ${ircmdManager.getLastErrorMessage()} (code: $result)")
-                            updateLastCommand("FFC", 0, false, ircmdManager.getLastErrorMessage(), result)
+                    }
+                    else -> {
+                        Log.e(TAG, "FFC failed: ${ircmdManager.getLastErrorMessage()} (code: $result)")
+                        updateLastCommand("FFC", 0, false, ircmdManager.getLastErrorMessage(), result)
+                        showError("FFC failed: ${ircmdManager.getLastErrorMessage()}") {
+                            performFFC()
                         }
                     }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error performing FFC", e)
-                runOnUiThread {
-                    ffcButton.isEnabled = true
-                    ffcButton.text = "FFC"
-                    updateLastCommand("FFC", 0, false, e.message ?: "Unknown error", -99)
+                binding.ffcButton.isEnabled = true
+                binding.ffcButton.text = "FFC"
+                updateLastCommand("FFC", 0, false, e.message ?: "Unknown error", -99)
+                showError("FFC failed: ${e.message}") {
+                    performFFC()
                 }
             }
-        }.start()
+        }
     }
     
     private fun setBrightness(level: Int) {
-        if (!ircmdManager.isInitialized()) {
-            Log.e(TAG, "Set brightness failed: Camera not initialized (code: ${IrcmdManager.ERROR_NOT_INITIALIZED})")
-            updateLastCommand("Brightness", level, false, "Camera not initialized", IrcmdManager.ERROR_NOT_INITIALIZED)
-            return
+        // Test both legacy and registry approaches
+        Log.i(TAG, "Testing both legacy and registry brightness setting")
+        
+        // Legacy approach
+        executeCameraCommand("Brightness (Legacy)", level) {
+            ircmdManager.setBrightness(level)
         }
-
-        // Run in background thread
-        Thread {
-            val result = ircmdManager.setBrightness(level)
-            
-            // Update UI on main thread
-            runOnUiThread {
+        
+        // NEW: Registry approach test
+        lifecycleScope.launch {
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    ircmdManager.setRegistryBrightness(level)
+                }
+                
                 when (result) {
                     IrcmdManager.ERROR_SUCCESS -> {
-                        Log.i(TAG, "Brightness set to $level successfully")
-                        updateLastCommand("Brightness", level, true)
+                        Log.i(TAG, "Registry brightness set to $level successfully")
+                        showSuccess("Registry brightness set to $level")
                     }
                     IrcmdManager.ERROR_NOT_INITIALIZED -> {
-                        Log.e(TAG, "Set brightness failed: Camera not initialized (code: $result)")
-                        updateLastCommand("Brightness", level, false, "Camera not initialized", result)
+                        Log.e(TAG, "Registry brightness failed: Camera not initialized")
+                        showError("Registry brightness failed: Camera not initialized")
                     }
                     else -> {
-                        Log.e(TAG, "Set brightness failed: ${ircmdManager.getLastErrorMessage()} (code: $result)")
-                        updateLastCommand("Brightness", level, false, ircmdManager.getLastErrorMessage(), result)
+                        Log.e(TAG, "Registry brightness failed with error code: $result")
+                        showError("Registry brightness failed: Error $result")
                     }
                 }
+            } catch (e: Exception) {
+                Log.e(TAG, "Exception in registry brightness", e)
+                showError("Registry brightness failed: ${e.message}")
             }
-        }.start()
+        }
     }
     
     private fun setContrast(level: Int) {
-        if (!ircmdManager.isInitialized()) {
-            Log.e(TAG, "Set contrast failed: Camera not initialized (code: ${IrcmdManager.ERROR_NOT_INITIALIZED})")
-            updateLastCommand("Contrast", level, false, "Camera not initialized", IrcmdManager.ERROR_NOT_INITIALIZED)
-            return
+        executeCameraCommand("Contrast", level) {
+            ircmdManager.setContrast(level)
         }
-
-        // Run in background thread
-        Thread {
-            val result = ircmdManager.setContrast(level)
-            
-            // Update UI on main thread
-            runOnUiThread {
-                when (result) {
-                    IrcmdManager.ERROR_SUCCESS -> {
-                        Log.i(TAG, "Contrast set to $level successfully")
-                        updateLastCommand("Contrast", level, true)
-                    }
-                    IrcmdManager.ERROR_NOT_INITIALIZED -> {
-                        Log.e(TAG, "Set contrast failed: Camera not initialized (code: $result)")
-                        updateLastCommand("Contrast", level, false, "Camera not initialized", result)
-                    }
-                    else -> {
-                        Log.e(TAG, "Set contrast failed: ${ircmdManager.getLastErrorMessage()} (code: $result)")
-                        updateLastCommand("Contrast", level, false, ircmdManager.getLastErrorMessage(), result)
-                    }
-                }
-            }
-        }.start()
     }
     
     /**
@@ -948,7 +1096,7 @@ class CameraActivity : AppCompatActivity() {
             supportActionBar?.hide()
             
             // Hide controls
-            (controlsContainer as View).visibility = View.GONE
+            binding.controlsContainer.visibility = View.GONE
             
             // Update layout for landscape with 4:3 aspect ratio
             updateLayoutForOrientation(Configuration.ORIENTATION_LANDSCAPE)
@@ -965,7 +1113,7 @@ class CameraActivity : AppCompatActivity() {
             supportActionBar?.show()
             
             // Show controls
-            (controlsContainer as View).visibility = View.VISIBLE
+            binding.controlsContainer.visibility = View.VISIBLE
             
             // Update layout for portrait
             updateLayoutForOrientation(Configuration.ORIENTATION_PORTRAIT)
@@ -986,12 +1134,6 @@ class CameraActivity : AppCompatActivity() {
     }
 
     private fun setPalette(newIndex: Int) {
-        if (!ircmdManager.isInitialized()) {
-            Log.e(TAG, "Set palette failed: Camera not initialized (code: ${IrcmdManager.ERROR_NOT_INITIALIZED})")
-            updateLastCommand("Palette", newIndex, false, "Camera not initialized", IrcmdManager.ERROR_NOT_INITIALIZED)
-            return
-        }
-
         // Handle wrapping around
         currentPaletteIndex = when {
             newIndex > MAX_PALETTE_INDEX -> MIN_PALETTE_INDEX
@@ -999,37 +1141,12 @@ class CameraActivity : AppCompatActivity() {
             else -> newIndex
         }
 
-        // Run in background thread
-        Thread {
-            val result = ircmdManager.setPalette(currentPaletteIndex)
-            
-            // Update UI on main thread
-            runOnUiThread {
-                when (result) {
-                    IrcmdManager.ERROR_SUCCESS -> {
-                        Log.i(TAG, "Palette set to ${PALETTE_NAMES[currentPaletteIndex]} (index: $currentPaletteIndex)")
-                        updateLastCommand("Palette", currentPaletteIndex, true)
-                    }
-                    IrcmdManager.ERROR_NOT_INITIALIZED -> {
-                        Log.e(TAG, "Set palette failed: Camera not initialized (code: $result)")
-                        updateLastCommand("Palette", currentPaletteIndex, false, "Camera not initialized", result)
-                    }
-                    else -> {
-                        Log.e(TAG, "Set palette failed: ${ircmdManager.getLastErrorMessage()} (code: $result)")
-                        updateLastCommand("Palette", currentPaletteIndex, false, ircmdManager.getLastErrorMessage(), result)
-                    }
-                }
-            }
-        }.start()
+        executeCameraCommand("Palette", currentPaletteIndex) {
+            ircmdManager.setPalette(currentPaletteIndex)
+        }
     }
 
     private fun setSceneMode(newIndex: Int) {
-        if (!ircmdManager.isInitialized()) {
-            Log.e(TAG, "Set scene mode failed: Camera not initialized (code: ${IrcmdManager.ERROR_NOT_INITIALIZED})")
-            updateLastCommand("Scene Mode", newIndex, false, "Camera not initialized", IrcmdManager.ERROR_NOT_INITIALIZED)
-            return
-        }
-
         // Handle wrapping around
         currentSceneModeIndex = when {
             newIndex > MAX_SCENE_MODE_INDEX -> MIN_SCENE_MODE_INDEX
@@ -1037,28 +1154,9 @@ class CameraActivity : AppCompatActivity() {
             else -> newIndex
         }
 
-        // Run in background thread
-        Thread {
-            val result = ircmdManager.setSceneMode(currentSceneModeIndex)
-            
-            // Update UI on main thread
-            runOnUiThread {
-                when (result) {
-                    IrcmdManager.ERROR_SUCCESS -> {
-                        Log.i(TAG, "Scene mode set to ${SCENE_MODE_NAMES[currentSceneModeIndex]} (index: $currentSceneModeIndex)")
-                        updateLastCommand("Scene Mode", currentSceneModeIndex, true)
-                    }
-                    IrcmdManager.ERROR_NOT_INITIALIZED -> {
-                        Log.e(TAG, "Set scene mode failed: Camera not initialized (code: $result)")
-                        updateLastCommand("Scene Mode", currentSceneModeIndex, false, "Camera not initialized", result)
-                    }
-                    else -> {
-                        Log.e(TAG, "Set scene mode failed: ${ircmdManager.getLastErrorMessage()} (code: $result)")
-                        updateLastCommand("Scene Mode", currentSceneModeIndex, false, ircmdManager.getLastErrorMessage(), result)
-                    }
-                }
-            }
-        }.start()
+        executeCameraCommand("Scene Mode", currentSceneModeIndex) {
+            ircmdManager.setSceneMode(currentSceneModeIndex)
+        }
     }
 
     private fun updateDeviceInfo(device: UsbDevice? = currentDevice) {
@@ -1098,8 +1196,9 @@ class CameraActivity : AppCompatActivity() {
                     }
                     .setNegativeButton("Cancel") { dialog, _ ->
                         dialog.dismiss()
-                        Toast.makeText(this, "Camera permission is required to use the thermal camera", Toast.LENGTH_LONG).show()
-                        finish()
+                        showError("Camera permission is required to use the thermal camera") {
+                            finish()
+                        }
                     }
                     .setCancelable(false)
                     .show()
@@ -1137,8 +1236,27 @@ class CameraActivity : AppCompatActivity() {
                     }
                 } else {
                     Log.w(TAG, "Camera permission denied")
-                    Toast.makeText(this, "Camera permission is required to use the thermal camera", Toast.LENGTH_LONG).show()
-                    finish()
+                    showError("Camera permission is required to use the thermal camera") {
+                        finish()
+                    }
+                }
+            }
+            STORAGE_PERMISSION_REQUEST_CODE -> {
+                if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                    Log.i(TAG, "Storage permission granted")
+                    showSuccess("Storage permission granted! You can now save enhanced images.")
+                } else {
+                    Log.w(TAG, "Storage permission denied")
+                    showError("Storage permission denied. Cannot save images to gallery.")
+                }
+            }
+            AUDIO_PERMISSION_REQUEST_CODE -> {
+                if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                    Log.i(TAG, "Audio permission granted")
+                    showSuccess("Audio permission granted! Video recording will include audio.")
+                } else {
+                    Log.w(TAG, "Audio permission denied")
+                    showError("Audio permission denied. Video recording will be silent.")
                 }
             }
         }
@@ -1157,162 +1275,177 @@ class CameraActivity : AppCompatActivity() {
         )
         usbManager.requestPermission(device, permissionIntent)
         permissionRequestTime = System.currentTimeMillis()
-        permissionCheckHandler.post(permissionCheckRunnable)
+        
+        // Start permission check with Coroutines instead of Handler
+        permissionCheckJob = lifecycleScope.launch {
+            while (isActive) {
+                delay(1000)
+                val currentTime = System.currentTimeMillis()
+                
+                if (currentTime - permissionRequestTime > PERMISSION_REQUEST_TIMEOUT) {
+                    Log.w(TAG, "Permission request timed out after ${PERMISSION_REQUEST_TIMEOUT}ms")
+                    showError("USB permission request timed out. Please try connecting the camera again.") {
+                        currentDevice?.let { device ->
+                            requestUsbPermission(device)
+                        } ?: finish()
+                    }
+                    return@launch
+                }
+
+                // Check if we got permission while waiting
+                currentDevice?.let { permissionDevice ->
+                    if (usbManager.hasPermission(permissionDevice)) {
+                        Log.i(TAG, "Permission granted while waiting")
+                        openUsbCamera(permissionDevice)
+                        return@launch
+                    }
+                }
+            }
+        }
     }
 
     private fun setNoiseReduction(level: Int) {
-        if (!ircmdManager.isInitialized()) {
-            Log.e(TAG, "Set noise reduction failed: Camera not initialized (code: ${IrcmdManager.ERROR_NOT_INITIALIZED})")
-            updateLastCommand("Noise Reduction", level, false, "Camera not initialized", IrcmdManager.ERROR_NOT_INITIALIZED)
-            return
+        executeCameraCommand("Noise Reduction", level) {
+            ircmdManager.setNoiseReduction(level)
         }
-
-        // Run in background thread
-        Thread {
-            val result = ircmdManager.setNoiseReduction(level)
-            
-            // Update UI on main thread
-            runOnUiThread {
-                when (result) {
-                    IrcmdManager.ERROR_SUCCESS -> {
-                        Log.i(TAG, "Noise reduction set to $level successfully")
-                        updateLastCommand("Noise Reduction", level, true)
-                    }
-                    IrcmdManager.ERROR_NOT_INITIALIZED -> {
-                        Log.e(TAG, "Set noise reduction failed: Camera not initialized (code: $result)")
-                        updateLastCommand("Noise Reduction", level, false, "Camera not initialized", result)
-                    }
-                    else -> {
-                        Log.e(TAG, "Set noise reduction failed: ${ircmdManager.getLastErrorMessage()} (code: $result)")
-                        updateLastCommand("Noise Reduction", level, false, ircmdManager.getLastErrorMessage(), result)
-                    }
-                }
-            }
-        }.start()
     }
 
     private fun setTimeNoiseReduction(level: Int) {
-        if (!ircmdManager.isInitialized()) {
-            Log.e(TAG, "Set time noise reduction failed: Camera not initialized (code: ${IrcmdManager.ERROR_NOT_INITIALIZED})")
-            updateLastCommand("Time Noise Reduction", level, false, "Camera not initialized", IrcmdManager.ERROR_NOT_INITIALIZED)
-            return
+        executeCameraCommand("Time Noise Reduction", level) {
+            ircmdManager.setTimeNoiseReduction(level)
         }
-
-        // Run in background thread
-        Thread {
-            val result = ircmdManager.setTimeNoiseReduction(level)
-            
-            // Update UI on main thread
-            runOnUiThread {
-                when (result) {
-                    IrcmdManager.ERROR_SUCCESS -> {
-                        Log.i(TAG, "Time noise reduction set to $level successfully")
-                        updateLastCommand("Time Noise Reduction", level, true)
-                    }
-                    IrcmdManager.ERROR_NOT_INITIALIZED -> {
-                        Log.e(TAG, "Set time noise reduction failed: Camera not initialized (code: $result)")
-                        updateLastCommand("Time Noise Reduction", level, false, "Camera not initialized", result)
-                    }
-                    else -> {
-                        Log.e(TAG, "Set time noise reduction failed: ${ircmdManager.getLastErrorMessage()} (code: $result)")
-                        updateLastCommand("Time Noise Reduction", level, false, ircmdManager.getLastErrorMessage(), result)
-                    }
-                }
-            }
-        }.start()
     }
 
     private fun setSpaceNoiseReduction(level: Int) {
-        if (!ircmdManager.isInitialized()) {
-            Log.e(TAG, "Set space noise reduction failed: Camera not initialized (code: ${IrcmdManager.ERROR_NOT_INITIALIZED})")
-            updateLastCommand("Space Noise Reduction", level, false, "Camera not initialized", IrcmdManager.ERROR_NOT_INITIALIZED)
-            return
+        executeCameraCommand("Space Noise Reduction", level) {
+            ircmdManager.setSpaceNoiseReduction(level)
         }
-
-        // Run in background thread
-        Thread {
-            val result = ircmdManager.setSpaceNoiseReduction(level)
-            
-            // Update UI on main thread
-            runOnUiThread {
-                when (result) {
-                    IrcmdManager.ERROR_SUCCESS -> {
-                        Log.i(TAG, "Space noise reduction set to $level successfully")
-                        updateLastCommand("Space Noise Reduction", level, true)
-                    }
-                    IrcmdManager.ERROR_NOT_INITIALIZED -> {
-                        Log.e(TAG, "Set space noise reduction failed: Camera not initialized (code: $result)")
-                        updateLastCommand("Space Noise Reduction", level, false, "Camera not initialized", result)
-                    }
-                    else -> {
-                        Log.e(TAG, "Set space noise reduction failed: ${ircmdManager.getLastErrorMessage()} (code: $result)")
-                        updateLastCommand("Space Noise Reduction", level, false, ircmdManager.getLastErrorMessage(), result)
-                    }
-                }
-            }
-        }.start()
     }
 
     private fun setDetailEnhancement(level: Int) {
-        if (!ircmdManager.isInitialized()) {
-            Log.e(TAG, "Set detail enhancement failed: Camera not initialized (code: ${IrcmdManager.ERROR_NOT_INITIALIZED})")
-            updateLastCommand("Detail Enhancement", level, false, "Camera not initialized", IrcmdManager.ERROR_NOT_INITIALIZED)
-            return
+        executeCameraCommand("Detail Enhancement", level) {
+            ircmdManager.setDetailEnhancement(level)
         }
-
-        // Run in background thread
-        Thread {
-            val result = ircmdManager.setDetailEnhancement(level)
-            
-            // Update UI on main thread
-            runOnUiThread {
-                when (result) {
-                    IrcmdManager.ERROR_SUCCESS -> {
-                        Log.i(TAG, "Detail enhancement set to $level successfully")
-                        updateLastCommand("Detail Enhancement", level, true)
-                    }
-                    IrcmdManager.ERROR_NOT_INITIALIZED -> {
-                        Log.e(TAG, "Set detail enhancement failed: Camera not initialized (code: $result)")
-                        updateLastCommand("Detail Enhancement", level, false, "Camera not initialized", result)
-                    }
-                    else -> {
-                        Log.e(TAG, "Set detail enhancement failed: ${ircmdManager.getLastErrorMessage()} (code: $result)")
-                        updateLastCommand("Detail Enhancement", level, false, ircmdManager.getLastErrorMessage(), result)
-                    }
-                }
-            }
-        }.start()
     }
 
     private fun setGlobalContrast(level: Int) {
-        if (!ircmdManager.isInitialized()) {
-            Log.e(TAG, "Set global contrast failed: Camera not initialized (code: ${IrcmdManager.ERROR_NOT_INITIALIZED})")
-            updateLastCommand("Global Contrast", level, false, "Camera not initialized", IrcmdManager.ERROR_NOT_INITIALIZED)
-            return
+        executeCameraCommand("Global Contrast", level) {
+            ircmdManager.setGlobalContrast(level)
         }
-
-        // Run in background thread
-        Thread {
-            val result = ircmdManager.setGlobalContrast(level)
+    }
+    
+    private fun setFrameRate(fps: Int) {
+        currentDevice?.let { device ->
+            val deviceConfig = DeviceConfigs.configs[device.productId]
+            if (deviceConfig == null) {
+                Log.e(TAG, "No device configuration found")
+                showError("No device configuration found")
+                return
+            }
             
-            // Update UI on main thread
-            runOnUiThread {
-                when (result) {
-                    IrcmdManager.ERROR_SUCCESS -> {
-                        Log.i(TAG, "Global contrast set to $level successfully")
-                        updateLastCommand("Global Contrast", level, true)
+            lifecycleScope.launch {
+                try {
+                    // Update UI to show processing
+                    updateLastCommand("Frame Rate", fps, true, "Changing to ${fps}fps via UVC...", 0)
+                    binding.frameRate25Button.isEnabled = false
+                    binding.frameRate50Button.isEnabled = false
+                    
+                    // Use UVC-native framerate control
+                    val success = withContext(Dispatchers.IO) {
+                        nativeSetFrameRate(deviceConfig.width, deviceConfig.height, fps)
                     }
-                    IrcmdManager.ERROR_NOT_INITIALIZED -> {
-                        Log.e(TAG, "Set global contrast failed: Camera not initialized (code: $result)")
-                        updateLastCommand("Global Contrast", level, false, "Camera not initialized", result)
+                    
+                    if (success) {
+                        // Verify the actual framerate
+                        val actualFps = withContext(Dispatchers.IO) {
+                            nativeGetCurrentFrameRate()
+                        }
+                        
+                        // Update device config with actual framerate
+                        val updatedConfig = deviceConfig.copy(fps = actualFps)
+                        DeviceConfigs.configs = DeviceConfigs.configs + (device.productId to updatedConfig)
+                        
+                        Log.i(TAG, "✅ UVC frame rate changed: requested ${fps}fps, actual ${actualFps}fps")
+                        updateLastCommand("Frame Rate", actualFps, true)
+                        showSuccess("Frame rate changed to ${actualFps}fps via UVC")
+                        
+                        // Update button colors to show current selection
+                        updateFrameRateButtonColors(actualFps)
+                        
+                    } else {
+                        Log.e(TAG, "❌ UVC framerate change failed")
+                        updateLastCommand("Frame Rate", fps, false, "UVC control failed", -1)
+                        showError("UVC framerate change failed - camera may not support ${fps}fps")
                     }
-                    else -> {
-                        Log.e(TAG, "Set global contrast failed: ${ircmdManager.getLastErrorMessage()} (code: $result)")
-                        updateLastCommand("Global Contrast", level, false, ircmdManager.getLastErrorMessage(), result)
-                    }
+                    
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error changing frame rate via UVC", e)
+                    updateLastCommand("Frame Rate", fps, false, e.message ?: "Unknown error", -99)
+                    showError("UVC framerate change failed: ${e.message}")
+                } finally {
+                    // Re-enable buttons
+                    binding.frameRate25Button.isEnabled = true
+                    binding.frameRate50Button.isEnabled = true
                 }
             }
-        }.start()
+        } ?: run {
+            Log.e(TAG, "No current device for framerate change")
+            showError("No device connected")
+        }
+    }
+    
+    private fun restartCameraWithNewFrameRate(device: UsbDevice, deviceConfig: DeviceConfig) {
+        try {
+            Log.i(TAG, "🔄 Restarting camera with new framerate: ${deviceConfig.fps}fps")
+            
+            // Stop current streaming
+            nativeStopStreaming()
+            
+            // Close current UVC camera
+            nativeCloseUvcCamera()
+            
+            // Short delay to ensure clean shutdown
+            Thread.sleep(200)
+            
+            // Re-open camera with new framerate parameters
+            val usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
+            val connection = usbManager.openDevice(device)
+            
+            if (connection != null) {
+                val fd = connection.fileDescriptor
+                
+                // Re-initialize with new framerate
+                if (nativeOpenUvcCamera(fd, deviceConfig.width, deviceConfig.height, deviceConfig.fps)) {
+                    // Re-setup video surface
+                    setupVideoSurface()
+                    Log.i(TAG, "✅ Camera restarted successfully with ${deviceConfig.fps}fps")
+                } else {
+                    Log.e(TAG, "❌ Failed to re-initialize camera with new framerate")
+                    showError("Failed to restart camera with new framerate")
+                }
+            } else {
+                Log.e(TAG, "❌ Failed to re-open USB device connection")
+                showError("Failed to re-open camera connection")
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error restarting camera", e)
+            showError("Error restarting camera: ${e.message}")
+        }
+    }
+    
+    private fun updateFrameRateButtonColors(currentFps: Int) {
+        runOnUiThread {
+            // Reset both buttons to default color
+            binding.frameRate25Button.backgroundTintList = getColorStateList(android.R.color.holo_blue_bright)
+            binding.frameRate50Button.backgroundTintList = getColorStateList(android.R.color.holo_blue_bright)
+            
+            // Highlight the current framerate button
+            when (currentFps) {
+                25 -> binding.frameRate25Button.backgroundTintList = getColorStateList(android.R.color.holo_green_dark)
+                50 -> binding.frameRate50Button.backgroundTintList = getColorStateList(android.R.color.holo_green_dark)
+            }
+        }
     }
 
     private fun setupExpandableGroup(header: TextView, content: LinearLayout) {
@@ -1330,6 +1463,769 @@ class CameraActivity : AppCompatActivity() {
                 R.drawable.ic_expand_more
             }
             header.setCompoundDrawablesWithIntrinsicBounds(0, 0, icon, 0)
+        }
+    }
+    
+    private fun logRegistryStatus() {
+        try {
+            val functionCount = ircmdManager.getRegisteredFunctionCount()
+            Log.i(TAG, "=== Camera Function Registry Status ===")
+            Log.i(TAG, "Total registered functions: $functionCount")
+            
+            // Test some function support checks
+            val brightnessSetSupported = ircmdManager.isFunctionSupported(
+                IrcmdManager.FUNCTION_TYPE_SET, 
+                IrcmdManager.Companion.CameraFunctionId.BRIGHTNESS
+            )
+            val brightnessGetSupported = ircmdManager.isFunctionSupported(
+                IrcmdManager.FUNCTION_TYPE_GET, 
+                IrcmdManager.Companion.CameraFunctionId.BRIGHTNESS
+            )
+            val ffcSupported = ircmdManager.isFunctionSupported(
+                IrcmdManager.FUNCTION_TYPE_ACTION, 
+                IrcmdManager.Companion.CameraFunctionId.FFC_UPDATE
+            )
+            
+            Log.i(TAG, "Brightness SET supported: $brightnessSetSupported")
+            Log.i(TAG, "Brightness GET supported: $brightnessGetSupported")
+            Log.i(TAG, "FFC ACTION supported: $ffcSupported")
+            Log.i(TAG, "===================================")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error checking registry status", e)
+        }
+    }
+    
+    // ===== TENSORFLOW LITE SUPER RESOLUTION =====
+    
+    private fun initializeSuperResolutionModel() {
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                Log.i(TAG, "🔄 Loading FSRCNN model...")
+                val assetFileDescriptor = assets.openFd("models/fsrcnn_x2.tflite")
+                val fileInputStream = FileInputStream(assetFileDescriptor.fileDescriptor)
+                val fileChannel = fileInputStream.channel
+                val startOffset = assetFileDescriptor.startOffset
+                val declaredLength = assetFileDescriptor.declaredLength
+                val modelBuffer = fileChannel.map(FileChannel.MapMode.READ_ONLY, startOffset, declaredLength)
+                
+                Log.i(TAG, "📊 Model file size: ${declaredLength} bytes")
+                
+                val options = Interpreter.Options()
+                options.setNumThreads(4) // Optimize for Pixel 7
+                
+                fsrcnnInterpreter = Interpreter(modelBuffer, options)
+                
+                // Get model input/output details
+                val inputShape = fsrcnnInterpreter!!.getInputTensor(0).shape()
+                val outputShape = fsrcnnInterpreter!!.getOutputTensor(0).shape()
+                Log.i(TAG, "📊 Model input shape: [${inputShape.joinToString(",")}]")
+                Log.i(TAG, "📊 Model output shape: [${outputShape.joinToString(",")}]")
+                
+                withContext(Dispatchers.Main) {
+                    Log.i(TAG, "✅ FSRCNN model loaded successfully!")
+                    binding.lastCommandText.text = "Last Command: FSRCNN model loaded for super resolution"
+                }
+                
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Failed to load FSRCNN model: ${e.message}", e)
+                withContext(Dispatchers.Main) {
+                    showError("Failed to load super resolution model: ${e.message}")
+                }
+            }
+        }
+    }
+    
+    private fun captureAndEnhanceFrame() {
+        lifecycleScope.launch {
+            try {
+                val startTime = System.currentTimeMillis()
+                
+                // Update UI to show processing
+                binding.lastCommandText.text = "Last Command: 🎯 Capturing raw thermal frame..."
+                binding.captureEnhanceButton.text = "🔄 Processing..."
+                binding.captureEnhanceButton.isEnabled = false
+                
+                // 🎯 CAPTURE RAW THERMAL FRAME (256x192 YUYV)
+                val rawFrameData = captureRawThermalFrame()
+                if (rawFrameData == null) {
+                    showError("Failed to capture raw thermal frame")
+                    return@launch
+                }
+                
+                Log.i(TAG, "🎯 Captured raw thermal frame: ${rawFrameData.width}x${rawFrameData.height}, ${rawFrameData.data.size} bytes")
+                
+                // Convert raw YUYV to display bitmap for comparison
+                val originalBitmap = convertYUYVToBitmap(rawFrameData)
+                
+                // Apply super resolution to raw data
+                val enhancedBitmap = withContext(Dispatchers.IO) {
+                    enhanceWithFSRCNNFromRaw(rawFrameData)
+                }
+                
+                val processingTime = System.currentTimeMillis() - startTime
+                
+                if (enhancedBitmap != null && originalBitmap != null) {
+                    Log.i(TAG, "🔥 Enhanced frame: ${enhancedBitmap.width}x${enhancedBitmap.height} (${processingTime}ms)")
+                    
+                    // Show results with raw vs enhanced comparison
+                    showEnhancementResults(originalBitmap, enhancedBitmap, processingTime)
+                    
+                } else {
+                    showError("Super resolution processing failed")
+                }
+                
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in capture and enhance", e)
+                showError("Capture and enhance failed: ${e.message}")
+            } finally {
+                // Reset button
+                binding.captureEnhanceButton.text = "📸 Capture & Enhance"
+                binding.captureEnhanceButton.isEnabled = true
+            }
+        }
+    }
+    
+    // Data class for raw frame
+    data class RawFrameData(
+        val width: Int,
+        val height: Int,
+        val data: ByteArray
+    )
+    
+    private suspend fun captureRawThermalFrame(): RawFrameData? = withContext(Dispatchers.IO) {
+        try {
+            Log.i(TAG, "🎯 Setting capture flag for next frame...")
+            nativeSetCaptureFlag(true)
+            
+            // Wait for frame to be captured (max 200ms)
+            var attempts = 0
+            while (attempts < 10 && !nativeHasCapturedFrame()) {
+                delay(20) // Wait 20ms between checks (50fps = 20ms per frame)
+                attempts++
+            }
+            
+            if (!nativeHasCapturedFrame()) {
+                Log.w(TAG, "Timeout waiting for frame capture")
+                return@withContext null
+            }
+            
+            val frameData = nativeGetCapturedFrame()
+            if (frameData == null || frameData.size < 8) {
+                Log.e(TAG, "Invalid frame data received")
+                return@withContext null
+            }
+            
+            // Extract width and height from first 8 bytes
+            val width = ByteBuffer.wrap(frameData, 0, 4).order(ByteOrder.LITTLE_ENDIAN).int
+            val height = ByteBuffer.wrap(frameData, 4, 4).order(ByteOrder.LITTLE_ENDIAN).int
+            
+            // Extract YUYV data (skip first 8 bytes)
+            val yuvData = frameData.copyOfRange(8, frameData.size)
+            
+            Log.i(TAG, "📸 Raw frame captured: ${width}x${height}, ${yuvData.size} bytes YUYV")
+            
+            RawFrameData(width, height, yuvData)
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error capturing raw frame: ${e.message}", e)
+            null
+        }
+    }
+    
+    private fun convertYUYVToBitmap(rawFrame: RawFrameData): Bitmap? {
+        try {
+            val bitmap = Bitmap.createBitmap(rawFrame.width, rawFrame.height, Bitmap.Config.ARGB_8888)
+            val yuvData = rawFrame.data
+            
+            // For thermal cameras, the Y (luminance) channel contains the thermal data
+            // Extract Y values and apply proper thermal visualization
+            val yValues = IntArray(rawFrame.width * rawFrame.height)
+            var minY = 255
+            var maxY = 0
+            
+            // Extract Y values and find range
+            for (y in 0 until rawFrame.height) {
+                for (x in 0 until rawFrame.width) {
+                    val yIndex = if (x % 2 == 0) {
+                        (y * rawFrame.width + x) * 2
+                    } else {
+                        (y * rawFrame.width + (x - 1)) * 2 + 2
+                    }
+                    
+                    if (yIndex < yuvData.size) {
+                        val yValue = yuvData[yIndex].toInt() and 0xFF
+                        yValues[y * rawFrame.width + x] = yValue
+                        minY = minOf(minY, yValue)
+                        maxY = maxOf(maxY, yValue)
+                    }
+                }
+            }
+            
+            Log.i(TAG, "🌡️ Thermal Y range: [$minY, $maxY]")
+            
+            // Apply thermal colormap (simple grayscale with contrast enhancement)
+            val range = maxY - minY
+            for (y in 0 until rawFrame.height) {
+                for (x in 0 until rawFrame.width) {
+                    val yValue = yValues[y * rawFrame.width + x]
+                    
+                    // Contrast-enhanced grayscale
+                    val normalized = if (range > 0) {
+                        ((yValue - minY).toFloat() / range).coerceIn(0f, 1f)
+                    } else {
+                        yValue / 255f
+                    }
+                    
+                    val gray = (normalized * 255).toInt()
+                    val color = (0xFF shl 24) or (gray shl 16) or (gray shl 8) or gray
+                    bitmap.setPixel(x, y, color)
+                }
+            }
+            
+            Log.i(TAG, "✅ Converted thermal YUYV to enhanced bitmap: ${bitmap.width}x${bitmap.height}")
+            return bitmap
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error converting YUYV to bitmap: ${e.message}", e)
+            return null
+        }
+    }
+    
+    private fun yuvToRgb(y: Int, u: Int, v: Int): Int {
+        // YUV to RGB conversion
+        val c = y - 16
+        val d = u - 128
+        val e = v - 128
+        
+        val r = ((298 * c + 409 * e + 128) shr 8).coerceIn(0, 255)
+        val g = ((298 * c - 100 * d - 208 * e + 128) shr 8).coerceIn(0, 255)
+        val b = ((298 * c + 516 * d + 128) shr 8).coerceIn(0, 255)
+        
+        return (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+    }
+    
+    private fun enhanceWithFSRCNNFromRaw(rawFrame: RawFrameData): Bitmap? {
+        val interpreter = fsrcnnInterpreter
+        if (interpreter == null) {
+            Log.e(TAG, "FSRCNN interpreter not initialized")
+            return null
+        }
+        
+        return try {
+            Log.i(TAG, "🤖 Starting FSRCNN enhancement: ${rawFrame.width}x${rawFrame.height} → ${rawFrame.width * 2}x${rawFrame.height * 2}")
+            
+            // Convert YUYV to grayscale array directly (more efficient)
+            val inputArray = preprocessYUYVToArray(rawFrame)
+            
+            // Prepare output array [1, 384, 512, 1] for 2x scaling
+            val outputHeight = rawFrame.height * 2
+            val outputWidth = rawFrame.width * 2
+            val outputArray = Array(1) { Array(outputHeight) { Array(outputWidth) { FloatArray(1) } } }
+            
+            Log.i(TAG, "📊 Model input: [1, ${rawFrame.height}, ${rawFrame.width}, 1]")
+            Log.i(TAG, "📊 Model output: [1, $outputHeight, $outputWidth, 1]")
+            
+            // Sample input to verify preprocessing
+            Log.i(TAG, "🔍 Input sample values: [0,0]=${inputArray[0][0][0][0]}, [10,10]=${inputArray[0][10][10][0]}, [50,50]=${inputArray[0][50][50][0]}")
+            
+            // Run inference
+            val inferenceStart = System.currentTimeMillis()
+            try {
+                interpreter.run(inputArray, outputArray)
+                val inferenceTime = System.currentTimeMillis() - inferenceStart
+                Log.i(TAG, "🔥 FSRCNN inference completed successfully in ${inferenceTime}ms")
+                
+                // Sample output to verify inference worked
+                Log.i(TAG, "🔍 Output sample values: [0,0]=${outputArray[0][0][0][0]}, [100,100]=${outputArray[0][100][100][0]}, [200,200]=${outputArray[0][200][200][0]}")
+                
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ FSRCNN inference failed: ${e.message}", e)
+                throw e
+            }
+            
+            // Convert output back to bitmap
+            val result = postprocessToBitmap(outputArray)
+            Log.i(TAG, "✅ FSRCNN enhancement complete: ${result.width}x${result.height}")
+            result
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "FSRCNN enhancement from raw failed: ${e.message}", e)
+            null
+        }
+    }
+    
+    private fun preprocessYUYVToArray(rawFrame: RawFrameData): Array<Array<Array<FloatArray>>> {
+        val width = rawFrame.width
+        val height = rawFrame.height
+        val inputArray = Array(1) { Array(height) { Array(width) { FloatArray(1) } } }
+        val yuvData = rawFrame.data
+        
+        Log.i(TAG, "🔄 Preprocessing YUYV ${width}x${height} with thermal enhancement")
+        
+        // First pass: Extract Y values and find thermal range
+        val yValues = IntArray(width * height)
+        var minY = 255
+        var maxY = 0
+        
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                val yIndex = if (x % 2 == 0) {
+                    (y * width + x) * 2
+                } else {
+                    (y * width + (x - 1)) * 2 + 2
+                }
+                
+                if (yIndex < yuvData.size) {
+                    val yValue = yuvData[yIndex].toInt() and 0xFF
+                    yValues[y * width + x] = yValue
+                    minY = minOf(minY, yValue)
+                    maxY = maxOf(maxY, yValue)
+                }
+            }
+        }
+        
+        Log.i(TAG, "🌡️ Thermal Y range: [$minY, $maxY]")
+        
+        // Second pass: Apply SAME contrast enhancement as original image
+        val range = maxY - minY
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                val yValue = yValues[y * width + x]
+                
+                // Apply identical enhancement as original thermal image
+                val enhanced = if (range > 0) {
+                    ((yValue - minY).toFloat() / range).coerceIn(0f, 1f)
+                } else {
+                    yValue / 255f
+                }
+                
+                inputArray[0][y][x][0] = enhanced
+            }
+        }
+        
+        Log.i(TAG, "✅ Applied thermal contrast enhancement to FSRCNN input")
+        return inputArray
+    }
+    
+    private fun enhanceWithFSRCNN(inputBitmap: Bitmap): Bitmap? {
+        val interpreter = fsrcnnInterpreter
+        if (interpreter == null) {
+            Log.e(TAG, "FSRCNN interpreter not initialized")
+            return null
+        }
+        
+        return try {
+            // Resize input to thermal dimensions if needed
+            val thermalBitmap = Bitmap.createScaledBitmap(inputBitmap, 256, 192, true)
+            
+            // Convert to grayscale and normalize to [0,1]
+            val inputArray = preprocessBitmap(thermalBitmap)
+            
+            // Prepare output array [1, 384, 512, 1]
+            val outputArray = Array(1) { Array(384) { Array(512) { FloatArray(1) } } }
+            
+            // Run inference
+            val inferenceStart = System.currentTimeMillis()
+            interpreter.run(inputArray, outputArray)
+            val inferenceTime = System.currentTimeMillis() - inferenceStart
+            
+            Log.i(TAG, "FSRCNN inference time: ${inferenceTime}ms")
+            
+            // Convert output back to bitmap
+            postprocessToBitmap(outputArray)
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "FSRCNN enhancement failed: ${e.message}", e)
+            null
+        }
+    }
+    
+    private fun preprocessBitmap(bitmap: Bitmap): Array<Array<Array<FloatArray>>> {
+        val width = bitmap.width
+        val height = bitmap.height
+        val inputArray = Array(1) { Array(height) { Array(width) { FloatArray(1) } } }
+        
+        // Convert to grayscale and normalize
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                val pixel = bitmap.getPixel(x, y)
+                val r = (pixel shr 16) and 0xFF
+                val g = (pixel shr 8) and 0xFF
+                val b = pixel and 0xFF
+                
+                // Convert to grayscale and normalize to [0,1]
+                val gray = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
+                inputArray[0][y][x][0] = gray.toFloat()
+            }
+        }
+        
+        return inputArray
+    }
+    
+    private fun postprocessToBitmap(outputArray: Array<Array<Array<FloatArray>>>): Bitmap {
+        val height = outputArray[0].size
+        val width = outputArray[0][0].size
+        
+        // Log output range for debugging
+        var minVal = Float.MAX_VALUE
+        var maxVal = Float.MIN_VALUE
+        var zeroCount = 0
+        var nonZeroCount = 0
+        
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                val value = outputArray[0][y][x][0]
+                minVal = minOf(minVal, value)
+                maxVal = maxOf(maxVal, value)
+                if (value == 0f) zeroCount++ else nonZeroCount++
+            }
+        }
+        
+        Log.i(TAG, "🔍 FSRCNN output analysis:")
+        Log.i(TAG, "   Range: [$minVal, $maxVal]")
+        Log.i(TAG, "   Zero values: $zeroCount, Non-zero: $nonZeroCount")
+        
+        // Check if output is all zeros or invalid
+        if (maxVal == minVal || (zeroCount > (width * height * 0.9))) {
+            Log.e(TAG, "❌ FSRCNN output appears invalid - mostly zeros or constant values")
+            return createTestPatternBitmap(width, height)
+        }
+        
+        // Use faster pixel array method instead of setPixel()
+        val pixels = IntArray(width * height)
+        
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                val value = outputArray[0][y][x][0]
+                
+                // Apply smart normalization
+                val normalizedValue = if (maxVal > minVal) {
+                    ((value - minVal) / (maxVal - minVal)).coerceIn(0f, 1f)
+                } else {
+                    0.5f
+                }
+                
+                val gray = (normalizedValue * 255f).toInt().coerceIn(0, 255)
+                val color = (0xFF shl 24) or (gray shl 16) or (gray shl 8) or gray
+                pixels[y * width + x] = color
+            }
+        }
+        
+        // Create bitmap efficiently
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        bitmap.setPixels(pixels, 0, width, 0, 0, width, height)
+        
+        Log.i(TAG, "✅ Postprocessed FSRCNN output to ${width}x${height} bitmap efficiently")
+        return bitmap
+    }
+    
+    private fun createTestPatternBitmap(width: Int, height: Int): Bitmap {
+        val pixels = IntArray(width * height)
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                val testValue = ((x + y) % 100) / 100f
+                val gray = (testValue * 255f).toInt()
+                val color = (0xFF shl 24) or (gray shl 16) or (gray shl 8) or gray
+                pixels[y * width + x] = color
+            }
+        }
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        bitmap.setPixels(pixels, 0, width, 0, 0, width, height)
+        Log.w(TAG, "🔧 Created test pattern bitmap")
+        return bitmap
+    }
+    
+    private fun showEnhancementResults(original: Bitmap, enhanced: Bitmap, processingTime: Long) {
+        // Create a simple dialog showing the results
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("🔥 Super Resolution Results")
+            .setMessage("Processing Time: ${processingTime}ms\n" +
+                       "Original: ${original.width}x${original.height}\n" +
+                       "Enhanced: ${enhanced.width}x${enhanced.height}\n" +
+                       "Scale: ${enhanced.width / original.width.toFloat()}x")
+            .setPositiveButton("Save Both Images") { _, _ ->
+                checkStoragePermissionAndSave(original, enhanced, processingTime)
+            }
+            .setNegativeButton("Close") { _, _ ->
+                binding.lastCommandText.text = "Last Command: Super resolution test completed (${processingTime}ms)"
+            }
+            .create()
+        
+        dialog.show()
+    }
+    
+    private fun checkStoragePermissionAndSave(original: Bitmap, enhanced: Bitmap, processingTime: Long) {
+        // For Android 10+ (API 29+), we use scoped storage and don't need WRITE_EXTERNAL_STORAGE
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            saveImagesToGallery(original, enhanced, processingTime)
+            return
+        }
+        
+        // For older versions, check for storage permission
+        when {
+            ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED -> {
+                saveImagesToGallery(original, enhanced, processingTime)
+            }
+            ActivityCompat.shouldShowRequestPermissionRationale(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) -> {
+                AlertDialog.Builder(this)
+                    .setTitle("Storage Permission Required")
+                    .setMessage("This app needs storage permission to save enhanced images to your gallery.")
+                    .setPositiveButton("Grant Permission") { _, _ ->
+                        ActivityCompat.requestPermissions(
+                            this,
+                            arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE),
+                            STORAGE_PERMISSION_REQUEST_CODE
+                        )
+                    }
+                    .setNegativeButton("Cancel") { dialog, _ ->
+                        dialog.dismiss()
+                        showError("Storage permission is required to save images")
+                    }
+                    .show()
+            }
+            else -> {
+                ActivityCompat.requestPermissions(
+                    this,
+                    arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE),
+                    STORAGE_PERMISSION_REQUEST_CODE
+                )
+            }
+        }
+    }
+    
+    private fun saveImagesToGallery(original: Bitmap, enhanced: Bitmap, processingTime: Long) {
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
+                
+                // Save original thermal image
+                val originalUri = saveBitmapToGallery(
+                    original, 
+                    "ThermalCamera_Original_${timestamp}",
+                    "Original 256x192 thermal image captured from camera"
+                )
+                
+                // Save enhanced image
+                val enhancedUri = saveBitmapToGallery(
+                    enhanced, 
+                    "ThermalCamera_Enhanced_${timestamp}",
+                    "Enhanced 512x384 thermal image processed with FSRCNN super resolution"
+                )
+                
+                withContext(Dispatchers.Main) {
+                    if (originalUri != null && enhancedUri != null) {
+                        binding.lastCommandText.text = "Last Command: Images saved to gallery (${processingTime}ms)"
+                        showSuccess("✅ Both images saved to gallery successfully!")
+                        Log.i(TAG, "📸 Images saved - Original: $originalUri, Enhanced: $enhancedUri")
+                    } else {
+                        showError("Failed to save one or both images to gallery")
+                    }
+                }
+                
+            } catch (e: Exception) {
+                Log.e(TAG, "Error saving images to gallery", e)
+                withContext(Dispatchers.Main) {
+                    showError("Error saving images: ${e.message}")
+                }
+            }
+        }
+    }
+    
+    private suspend fun saveBitmapToGallery(bitmap: Bitmap, filename: String, description: String): Uri? = withContext(Dispatchers.IO) {
+        try {
+            val resolver = contentResolver
+            val imageCollection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+            } else {
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+            }
+            
+            val imageDetails = ContentValues().apply {
+                put(MediaStore.Images.Media.DISPLAY_NAME, "$filename.jpg")
+                put(MediaStore.Images.Media.DESCRIPTION, description)
+                put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/ThermalCamera")
+                    put(MediaStore.Images.Media.IS_PENDING, 1)
+                }
+            }
+            
+            val imageUri = resolver.insert(imageCollection, imageDetails)
+            if (imageUri != null) {
+                resolver.openOutputStream(imageUri)?.use { outputStream ->
+                    if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 95, outputStream)) {
+                        throw Exception("Failed to compress bitmap")
+                    }
+                }
+                
+                // Mark as not pending (for Android Q+)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    imageDetails.clear()
+                    imageDetails.put(MediaStore.Images.Media.IS_PENDING, 0)
+                    resolver.update(imageUri, imageDetails, null, null)
+                }
+                
+                Log.i(TAG, "✅ Saved image: $filename to $imageUri")
+                imageUri
+            } else {
+                Log.e(TAG, "Failed to create MediaStore entry for $filename")
+                null
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error saving bitmap $filename to gallery", e)
+            null
+        }
+    }
+    
+    // ===== VIDEO RECORDING FUNCTIONALITY =====
+    
+    private fun initializeVideoRecorder() {
+        videoRecorder = VideoRecorder(this)
+        Log.i(TAG, "🎥 Video recorder initialized")
+    }
+    
+    private fun startVideoRecording() {
+        // TODO: Re-enable audio permission check when implementing microphone input
+        // Currently recording video-only to fix muxer start issues
+        // if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+        //     requestAudioPermission()
+        //     return
+        // }
+        
+        // Get current device configuration
+        val deviceConfig = currentDevice?.let { DeviceConfigs.configs[it.productId] }
+        if (deviceConfig == null) {
+            showError("Cannot start recording: No device configuration found")
+            return
+        }
+        
+        // Configure recorder with current camera settings
+        val deviceTypeString = when (deviceConfig.deviceType) {
+            3 -> "384"
+            7 -> "256"
+            8 -> "640"
+            else -> "256"
+        }
+        
+        // Match camera fps for proper timing synchronization
+        val recordingFps = deviceConfig.fps // Use actual camera fps
+        
+        videoRecorder.configure(
+            width = deviceConfig.width,
+            height = deviceConfig.height,
+            fps = recordingFps,
+            deviceType = deviceTypeString,
+            bitrateMbps = 15, // TODO: Get from settings
+            includeAudio = false // Temporarily disable until microphone input is implemented
+        )
+        
+        // Start recording (surface is null for direct recording mode)
+        val recordingSurface = videoRecorder.startRecording(binding.cameraView)
+        
+        // Check if recording actually started (for both modes)
+        if (videoRecorder.isRecording()) {
+            // Update UI
+            binding.recordButton.text = "⏹️ Stop"
+            binding.recordButton.backgroundTintList = getColorStateList(android.R.color.holo_red_dark)
+            binding.pauseResumeButton.isEnabled = true
+            binding.recordingDurationText.visibility = View.VISIBLE
+            
+            // Start duration updates
+            startRecordingDurationUpdates()
+            
+            val mode = if (recordingSurface == null) "direct" else "textureview"
+            Log.i(TAG, "📹 Video recording started ($mode mode)")
+            showSuccess("Recording started!")
+        } else {
+            showError("Failed to start video recording")
+        }
+    }
+    
+    private fun stopVideoRecording() {
+        videoRecorder.stopRecording()
+        
+        // Update UI
+        binding.recordButton.text = "🔴 Record"
+        binding.recordButton.backgroundTintList = getColorStateList(android.R.color.holo_blue_bright)
+        binding.pauseResumeButton.isEnabled = false
+        binding.pauseResumeButton.text = "⏸️ Pause"
+        binding.recordingDurationText.visibility = View.GONE
+        
+        // Stop duration updates
+        recordingDurationUpdateJob?.cancel()
+        
+        Log.i(TAG, "🛑 Video recording stopped")
+        showSuccess("Recording saved to gallery!")
+    }
+    
+    private fun pauseVideoRecording() {
+        videoRecorder.pauseRecording()
+        binding.pauseResumeButton.text = "▶️ Resume"
+        Log.i(TAG, "⏸️ Video recording paused")
+    }
+    
+    private fun resumeVideoRecording() {
+        videoRecorder.resumeRecording()
+        binding.pauseResumeButton.text = "⏸️ Pause"
+        Log.i(TAG, "▶️ Video recording resumed")
+    }
+    
+    private fun startRecordingDurationUpdates() {
+        recordingDurationUpdateJob?.cancel()
+        recordingDurationUpdateJob = lifecycleScope.launch {
+            while (videoRecorder.isRecording()) {
+                val duration = videoRecorder.getRecordingDuration()
+                val minutes = (duration / 1000) / 60
+                val seconds = (duration / 1000) % 60
+                
+                withContext(Dispatchers.Main) {
+                    binding.recordingDurationText.text = "Duration: %02d:%02d".format(minutes, seconds)
+                    
+                    // Change color when paused
+                    val textColor = if (videoRecorder.isPaused()) {
+                        android.graphics.Color.YELLOW
+                    } else {
+                        android.graphics.Color.RED
+                    }
+                    binding.recordingDurationText.setTextColor(textColor)
+                }
+                
+                delay(1000) // Update every second
+            }
+        }
+    }
+    
+    private fun requestAudioPermission() {
+        when {
+            ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED -> {
+                startVideoRecording()
+            }
+            ActivityCompat.shouldShowRequestPermissionRationale(this, Manifest.permission.RECORD_AUDIO) -> {
+                AlertDialog.Builder(this)
+                    .setTitle("Microphone Permission Required")
+                    .setMessage("This app needs microphone permission to record audio with videos. You can still record silent videos if you deny this permission.")
+                    .setPositiveButton("Grant Permission") { _, _ ->
+                        ActivityCompat.requestPermissions(
+                            this,
+                            arrayOf(Manifest.permission.RECORD_AUDIO),
+                            AUDIO_PERMISSION_REQUEST_CODE
+                        )
+                    }
+                    .setNegativeButton("Record Silent Video") { _, _ ->
+                        // Start recording without audio
+                        startVideoRecording()
+                    }
+                    .show()
+            }
+            else -> {
+                ActivityCompat.requestPermissions(
+                    this,
+                    arrayOf(Manifest.permission.RECORD_AUDIO),
+                    AUDIO_PERMISSION_REQUEST_CODE
+                )
+            }
         }
     }
 }

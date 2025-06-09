@@ -68,7 +68,15 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="Open Camera"
-            android:enabled="false" />
+            android:enabled="false"
+            android:layout_marginBottom="16dp" />
+
+        <Button
+            android:id="@+id/testSuperResolutionButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="🔥 Test Super Resolution"
+            android:backgroundTint="#FF6B35" />
 
     </LinearLayout>
 

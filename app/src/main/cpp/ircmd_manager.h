@@ -4,6 +4,7 @@
 #include <libusb.h>
 #include <mutex>
 #include "libircmd.h"  // Include this for error codes and function declarations
+#include "camera_function_registry.h"  // Include our new registry
 
 // Logging macros
 #define IRCMD_LOG_TAG "IrcmdManager"
@@ -155,7 +156,13 @@ public:
         return reinterpret_cast<IrcmdHandle_t*>(ircmd_handle_);
     }
 
-    // Camera function execution
+    // New registry-based function execution  
+    int executeGetFunction(CameraFunctionId functionId, int& outValue);
+    int executeSetFunction(CameraFunctionId functionId, int value);
+    int executeSetFunction2(CameraFunctionId functionId, int value1, int value2);
+    int executeActionFunction(CameraFunctionId functionId);
+    
+    // Legacy function execution (for backward compatibility during transition)
     int executeGetFunction(CameraFunction func, int& outValue);
     int executeSetFunction(CameraFunction func, int value);
     int executeActionFunction(CameraFunction func);

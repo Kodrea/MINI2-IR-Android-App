@@ -5,6 +5,8 @@
 #include <android/log.h>
 #include <libusb.h>
 #include <libyuv.h>
+#include <cstring>   // For memcpy
+#include <chrono>    // For video recording timestamps
 
 // Helper function for color conversion
 inline int clamp(int value, int min, int max) {
@@ -67,7 +69,11 @@ Java_com_example_androidlibuvc_UVCManager_nativeCleanup(JNIEnv* env, jobject thi
 // UVCCamera implementation
 UVCCamera::UVCCamera()
     : ctx_(nullptr), dev_(nullptr), devh_(nullptr), usb_ctx_(nullptr),
-      is_streaming_(false), window_(nullptr), keep_usb_event_thread_running_(false) {
+      is_streaming_(false), window_(nullptr), keep_usb_event_thread_running_(false),
+      capture_next_frame_(false), has_captured_frame_(false),
+      captured_frame_width_(0), captured_frame_height_(0),
+      video_recording_enabled_(false), video_encoder_callback_(nullptr), 
+      video_callback_user_ptr_(nullptr), video_recording_start_time_(0) {
 }
 
 UVCCamera::~UVCCamera() {
@@ -217,11 +223,36 @@ bool UVCCamera::startStream(int width, int height, int fps, ANativeWindow* windo
     window_ = window; // Assign early to check in callback even if uvc_start_streaming fails
 
     LOGI("Attempting to get stream control for %dx%d @ %dfps, format YUYV", width, height, fps);
-    uvc_error_t res = uvc_get_stream_ctrl_format_size(
-        devh_, &ctrl_,
-        UVC_FRAME_FORMAT_YUYV,  // Assuming YUYV
-        width, height, fps
-    );
+    
+    // Try different formats in order of preference
+    uvc_frame_format formats[] = {
+        UVC_FRAME_FORMAT_YUYV,
+        UVC_FRAME_FORMAT_UYVY,
+        UVC_FRAME_FORMAT_MJPEG,
+        UVC_FRAME_FORMAT_UNCOMPRESSED
+    };
+    
+    const char* format_names[] = {"YUYV", "UYVY", "MJPEG", "UNCOMPRESSED"};
+    
+    uvc_error_t res = UVC_ERROR_NOT_FOUND;
+    uvc_frame_format successful_format = UVC_FRAME_FORMAT_UNKNOWN;
+    
+    for (int i = 0; i < 4; i++) {
+        LOGI("Trying format %s (%d)...", format_names[i], formats[i]);
+        res = uvc_get_stream_ctrl_format_size(
+            devh_, &ctrl_,
+            formats[i],
+            width, height, fps
+        );
+        
+        if (res == UVC_SUCCESS) {
+            successful_format = formats[i];
+            LOGI("✅ Successfully negotiated format %s", format_names[i]);
+            break;
+        } else {
+            LOGI("❌ Format %s failed: %s", format_names[i], uvc_strerror(res));
+        }
+    }
 
     if (res != UVC_SUCCESS) {
         LOGE("Failed to get stream control: %s (%d). Check if format/resolution/fps is supported.", uvc_strerror(res), res);
@@ -229,6 +260,9 @@ bool UVCCamera::startStream(int width, int height, int fps, ANativeWindow* windo
         return false;
     }
     LOGI("Stream control obtained successfully. Negotiated parameters:");
+    LOGI("  Format: %s (%d)", format_names[successful_format == UVC_FRAME_FORMAT_YUYV ? 0 : 
+                                       successful_format == UVC_FRAME_FORMAT_UYVY ? 1 :
+                                       successful_format == UVC_FRAME_FORMAT_MJPEG ? 2 : 3], successful_format);
     LOGI("  bmHint: %u", ctrl_.bmHint);
     LOGI("  bFormatIndex: %u", ctrl_.bFormatIndex);
     LOGI("  bFrameIndex: %u", ctrl_.bFrameIndex);
@@ -363,11 +397,32 @@ void UVCCamera::frameCallback(uvc_frame_t* frame, void* ptr) {
     }
 
 
-    // Verify frame format
-    if (frame->frame_format != UVC_FRAME_FORMAT_YUYV) {
-        LOGE("frameCallback: Unsupported frame format: %d (expected YUYV=%d)", 
-             frame->frame_format, UVC_FRAME_FORMAT_YUYV);
-        return;
+    // Verify frame format - support multiple formats
+    const char* format_name = "UNKNOWN";
+    switch (frame->frame_format) {
+        case UVC_FRAME_FORMAT_YUYV:
+            format_name = "YUYV";
+            break;
+        case UVC_FRAME_FORMAT_UYVY:
+            format_name = "UYVY";
+            break;
+        case UVC_FRAME_FORMAT_MJPEG:
+            format_name = "MJPEG";
+            break;
+        case UVC_FRAME_FORMAT_UNCOMPRESSED:
+            format_name = "UNCOMPRESSED";
+            break;
+        default:
+            LOGE("frameCallback: Unsupported frame format: %d", frame->frame_format);
+            return;
+    }
+    
+    // Log frame processing info periodically (every 100 frames) to avoid spam
+    static int frame_count = 0;
+    frame_count++;
+    if (frame_count % 100 == 0) {
+        LOGI("frameCallback: Processed %d %s frames %dx%d, %zu bytes", 
+             frame_count, format_name, frame->width, frame->height, frame->data_bytes);
     }
 
     // Verify frame dimensions
@@ -377,12 +432,104 @@ void UVCCamera::frameCallback(uvc_frame_t* frame, void* ptr) {
         return;
     }
 
-    // Calculate expected data size for YUYV format (2 bytes per pixel)
-    size_t expected_size = frame->width * frame->height * 2;
+    // Calculate expected data size based on format
+    size_t expected_size;
+    switch (frame->frame_format) {
+        case UVC_FRAME_FORMAT_YUYV:
+        case UVC_FRAME_FORMAT_UYVY:
+            expected_size = frame->width * frame->height * 2; // 2 bytes per pixel
+            break;
+        case UVC_FRAME_FORMAT_MJPEG:
+            // MJPEG is compressed, so size varies - just check minimum
+            expected_size = frame->width * frame->height / 10; // Very conservative estimate
+            break;
+        case UVC_FRAME_FORMAT_UNCOMPRESSED:
+            // Could be various formats, check based on step if available
+            expected_size = frame->step ? frame->step * frame->height : frame->width * frame->height * 2;
+            break;
+        default:
+            expected_size = frame->width * frame->height; // Minimum single channel
+            break;
+    }
+    
     if (frame->data_bytes < expected_size) {
-        LOGE("frameCallback: Frame data size too small: %zu < %zu",
-             frame->data_bytes, expected_size);
-        return;
+        LOGE("frameCallback: Frame data size mismatch: received %zu bytes, expected %zu bytes for %dx%d %s",
+             frame->data_bytes, expected_size, frame->width, frame->height, format_name);
+        LOGE("  Frame details: format=%d, step=%zu", frame->frame_format, frame->step);
+        
+        // For MJPEG, size variation is normal
+        if (frame->frame_format == UVC_FRAME_FORMAT_MJPEG) {
+            LOGW("  MJPEG frame size variation is normal, proceeding...");
+        } else {
+            // Try to work with what we have if it's at least the minimum viable size
+            if (frame->data_bytes < (frame->width * frame->height)) {
+                LOGE("  Data too small even for single channel, skipping frame");
+                return;
+            } else {
+                LOGW("  Attempting to process frame with smaller than expected data size");
+            }
+        }
+    }
+
+    // 🎯 RAW FRAME CAPTURE FOR SUPER RESOLUTION
+    if (camera->capture_next_frame_.load() && frame->width == 256 && frame->height == 192) {
+        std::lock_guard<std::mutex> lock(camera->capture_mutex_);
+        
+        // Use actual frame size instead of calculated size for capture
+        size_t capture_size = std::min(frame->data_bytes, static_cast<size_t>(frame->width * frame->height * 2));
+        camera->captured_frame_data_.resize(capture_size);
+        std::memcpy(camera->captured_frame_data_.data(), frame->data, capture_size);
+        
+        camera->captured_frame_width_ = frame->width;
+        camera->captured_frame_height_ = frame->height;
+        camera->has_captured_frame_.store(true);
+        camera->capture_next_frame_.store(false);
+        
+        LOGI("🎯 Captured raw thermal frame: %dx%d, %zu bytes (actual: %zu)", 
+             frame->width, frame->height, capture_size, frame->data_bytes);
+    }
+
+    // 🎥 DIRECT VIDEO RECORDING
+    if (camera->video_recording_enabled_.load() && camera->video_encoder_callback_ != nullptr) {
+        if (frame->frame_format == UVC_FRAME_FORMAT_YUYV) {
+            // Calculate YUV420 buffer size (1.5 bytes per pixel)
+            const int yuv420_size = frame->width * frame->height * 3 / 2;
+            
+            // Allocate temporary buffer for YUV420 conversion
+            uint8_t* yuv420_buffer = new uint8_t[yuv420_size];
+            
+            // Convert YUYV to YUV420 directly
+            camera->convertYUYVToYUV420(
+                static_cast<const uint8_t*>(frame->data),
+                yuv420_buffer,
+                frame->width,
+                frame->height
+            );
+            
+            // Calculate timestamp relative to recording start
+            auto now = std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()
+            ).count();
+            
+            // Initialize recording start time on first frame
+            if (camera->video_recording_start_time_ == 0) {
+                camera->video_recording_start_time_ = now;
+            }
+            
+            int64_t timestampUs = now - camera->video_recording_start_time_;
+            
+            // Call the video encoder callback with converted YUV420 data
+            camera->video_encoder_callback_(
+                yuv420_buffer,
+                frame->width,
+                frame->height,
+                timestampUs,
+                camera->video_callback_user_ptr_
+            );
+            
+            // Clean up temporary buffer
+            delete[] yuv420_buffer;
+        }
     }
 
     ANativeWindow_Buffer buffer;
@@ -417,18 +564,54 @@ void UVCCamera::frameCallback(uvc_frame_t* frame, void* ptr) {
         return;
     }
 
-    // Use libyuv YUY2ToARGB with additional safety checks
-    int result = libyuv::YUY2ToARGB(
-        static_cast<const uint8_t*>(frame->data),     // src_yuy2
-        frame->step,                                  // src_stride_yuy2 (use frame->step)
-        static_cast<uint8_t*>(buffer.bits),           // dst_argb
-        buffer.stride * 4,                            // dst_stride_argb (4 bytes per pixel)
-        frame->width,                                 // width
-        frame->height                                 // height
-    );
+    // Use appropriate libyuv conversion based on format
+    int result = -1;
+    switch (frame->frame_format) {
+        case UVC_FRAME_FORMAT_YUYV:
+            result = libyuv::YUY2ToARGB(
+                static_cast<const uint8_t*>(frame->data),     // src_yuy2
+                frame->step,                                  // src_stride_yuy2 (use frame->step)
+                static_cast<uint8_t*>(buffer.bits),           // dst_argb
+                buffer.stride * 4,                            // dst_stride_argb (4 bytes per pixel)
+                frame->width,                                 // width
+                frame->height                                 // height
+            );
+            break;
+        case UVC_FRAME_FORMAT_UYVY:
+            result = libyuv::UYVYToARGB(
+                static_cast<const uint8_t*>(frame->data),     // src_uyvy
+                frame->step,                                  // src_stride_uyvy
+                static_cast<uint8_t*>(buffer.bits),           // dst_argb
+                buffer.stride * 4,                            // dst_stride_argb
+                frame->width,                                 // width
+                frame->height                                 // height
+            );
+            break;
+        case UVC_FRAME_FORMAT_MJPEG:
+            // MJPEG needs to be decoded first - for now, create a placeholder
+            LOGW("frameCallback: MJPEG decoding not yet implemented, using placeholder");
+            memset(buffer.bits, 0x80, buffer.width * buffer.height * 4); // Gray placeholder
+            result = 0;
+            break;
+        case UVC_FRAME_FORMAT_UNCOMPRESSED:
+            // Try YUYV conversion as fallback for uncompressed
+            result = libyuv::YUY2ToARGB(
+                static_cast<const uint8_t*>(frame->data),
+                frame->step,
+                static_cast<uint8_t*>(buffer.bits),
+                buffer.stride * 4,
+                frame->width,
+                frame->height
+            );
+            break;
+        default:
+            LOGE("frameCallback: No conversion available for format %d", frame->frame_format);
+            ANativeWindow_unlockAndPost(camera->window_);
+            return;
+    }
     
     if (result != 0) {
-        LOGE("frameCallback: YUY2ToARGB conversion failed: %d", result);
+        LOGE("frameCallback: Format conversion failed: %d for %s", result, format_name);
         ANativeWindow_unlockAndPost(camera->window_);
         return;
     }
@@ -659,4 +842,256 @@ void UVCCamera::printDeviceInfo() {
     LOGI("  UVC Version: %d.%d", (desc->bcdUVC >> 8) & 0xFF, desc->bcdUVC & 0xFF);
 
     uvc_free_device_descriptor(desc);
+}
+
+// Raw frame capture implementation
+bool UVCCamera::getCapturedFrameData(uint8_t* buffer, int* width, int* height) {
+    std::lock_guard<std::mutex> lock(capture_mutex_);
+    
+    if (!has_captured_frame_.load() || captured_frame_data_.empty()) {
+        return false;
+    }
+    
+    *width = captured_frame_width_;
+    *height = captured_frame_height_;
+    
+    // Copy the captured YUYV data to the provided buffer
+    std::memcpy(buffer, captured_frame_data_.data(), captured_frame_data_.size());
+    
+    // Reset the capture flag
+    has_captured_frame_.store(false);
+    
+    LOGI("📸 Retrieved captured frame: %dx%d, %zu bytes", 
+         *width, *height, captured_frame_data_.size());
+    
+    return true;
+}
+
+// ===== UVC FRAMERATE CONTROL IMPLEMENTATION =====
+
+std::vector<int> UVCCamera::getSupportedFrameRates(int width, int height) {
+    std::vector<int> frameRates;
+    
+    if (!devh_) {
+        LOGE("Device not initialized");
+        return frameRates;
+    }
+    
+    LOGI("🔍 Querying supported frame rates for %dx%d...", width, height);
+    
+    // Get format descriptors
+    const uvc_format_desc_t* format_desc = uvc_get_format_descs(devh_);
+    while (format_desc) {
+        // Look for YUYV format
+        if (format_desc->bDescriptorSubtype == UVC_VS_FORMAT_UNCOMPRESSED) {
+            LOGI("Checking format index %d", format_desc->bFormatIndex);
+            
+            // Check frame descriptors for this format
+            const uvc_frame_desc_t* frame_desc = format_desc->frame_descs;
+            while (frame_desc) {
+                if (frame_desc->wWidth == width && frame_desc->wHeight == height) {
+                    LOGI("Found matching resolution %dx%d (frame index %d)", 
+                         width, height, frame_desc->bFrameIndex);
+                    
+                    // Extract all supported frame intervals
+                    if (frame_desc->bFrameIntervalType == 0) {
+                        // Continuous frame intervals
+                        uint32_t min_interval = frame_desc->dwMinFrameInterval;
+                        uint32_t max_interval = frame_desc->dwMaxFrameInterval;
+                        uint32_t step_interval = frame_desc->dwFrameIntervalStep;
+                        
+                        LOGI("Continuous intervals: min=%u, max=%u, step=%u", 
+                             min_interval, max_interval, step_interval);
+                        
+                        for (uint32_t interval = min_interval; interval <= max_interval; interval += step_interval) {
+                            int fps = (int)(10000000.0 / interval);
+                            if (fps > 0 && fps <= 120) { // Reasonable FPS range
+                                frameRates.push_back(fps);
+                                LOGI("  📊 Supported FPS: %d (interval: %u)", fps, interval);
+                            }
+                        }
+                    } else {
+                        // Discrete frame intervals
+                        LOGI("Discrete intervals: count=%d", frame_desc->bFrameIntervalType);
+                        for (int i = 0; i < frame_desc->bFrameIntervalType; i++) {
+                            uint32_t interval = frame_desc->intervals[i];
+                            int fps = (int)(10000000.0 / interval);
+                            frameRates.push_back(fps);
+                            LOGI("  📊 Supported FPS: %d (interval: %u)", fps, interval);
+                        }
+                    }
+                }
+                frame_desc = frame_desc->next;
+            }
+        }
+        format_desc = format_desc->next;
+    }
+    
+    // Remove duplicates and sort
+    std::sort(frameRates.begin(), frameRates.end());
+    frameRates.erase(std::unique(frameRates.begin(), frameRates.end()), frameRates.end());
+    
+    LOGI("📊 Final supported frame rates for %dx%d:", width, height);
+    for (int fps : frameRates) {
+        LOGI("  - %d fps", fps);
+    }
+    
+    return frameRates;
+}
+
+bool UVCCamera::setFrameRate(int width, int height, int fps) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    
+    if (!devh_) {
+        LOGE("Device not initialized");
+        return false;
+    }
+    
+    LOGI("🎯 Setting frame rate to %d fps for %dx%d", fps, width, height);
+    
+    // Stop current streaming if active
+    bool was_streaming = is_streaming_;
+    if (was_streaming) {
+        LOGI("Stopping current stream to change framerate...");
+        if (devh_) {
+            uvc_stop_streaming(devh_);
+        }
+        is_streaming_ = false;
+    }
+    
+    // Get new stream control with desired framerate
+    uvc_stream_ctrl_t new_ctrl;
+    uvc_error_t res = uvc_get_stream_ctrl_format_size(
+        devh_, &new_ctrl,
+        UVC_FRAME_FORMAT_YUYV,
+        width, height, fps
+    );
+    
+    if (res != UVC_SUCCESS) {
+        LOGE("Failed to get stream control for %dx%d @ %dfps: %s (%d)", 
+             width, height, fps, uvc_strerror(res), res);
+        
+        // Try to restart with original settings if we were streaming
+        if (was_streaming) {
+            LOGI("Attempting to restart with original settings...");
+            uvc_start_streaming(devh_, &ctrl_, frameCallback, this, 0);
+            is_streaming_ = true;
+        }
+        return false;
+    }
+    
+    // Log negotiated parameters
+    float actual_fps = 10000000.0f / new_ctrl.dwFrameInterval;
+    LOGI("✅ Negotiated framerate: %.2f fps (requested: %d fps)", actual_fps, fps);
+    LOGI("Stream control parameters:");
+    LOGI("  bFormatIndex: %u", new_ctrl.bFormatIndex);
+    LOGI("  bFrameIndex: %u", new_ctrl.bFrameIndex);
+    LOGI("  dwFrameInterval: %u (%.2f fps)", new_ctrl.dwFrameInterval, actual_fps);
+    
+    // Update our control structure
+    ctrl_ = new_ctrl;
+    
+    // Restart streaming if it was active
+    if (was_streaming && window_) {
+        LOGI("Restarting stream with new framerate...");
+        res = uvc_start_streaming(devh_, &ctrl_, frameCallback, this, 0);
+        if (res != UVC_SUCCESS) {
+            LOGE("Failed to restart streaming: %s (%d)", uvc_strerror(res), res);
+            return false;
+        }
+        is_streaming_ = true;
+        LOGI("✅ Stream restarted successfully with new framerate");
+    }
+    
+    return true;
+}
+
+int UVCCamera::getCurrentFrameRate() {
+    if (!devh_ || !is_streaming_) {
+        LOGE("Camera not streaming");
+        return 0;
+    }
+    
+    float fps = 10000000.0f / ctrl_.dwFrameInterval;
+    LOGI("📊 Current frame rate: %.2f fps (interval: %u)", fps, ctrl_.dwFrameInterval);
+    return (int)round(fps);
+}
+
+void UVCCamera::enumerateAllFrameRates() {
+    if (!devh_) {
+        LOGE("Device not initialized");
+        return;
+    }
+    
+    LOGI("🔍 Enumerating ALL supported frame rates...");
+    
+    const uvc_format_desc_t* format_desc = uvc_get_format_descs(devh_);
+    while (format_desc) {
+        if (format_desc->bDescriptorSubtype == UVC_VS_FORMAT_UNCOMPRESSED) {
+            LOGI("Format Index %d:", format_desc->bFormatIndex);
+            
+            const uvc_frame_desc_t* frame_desc = format_desc->frame_descs;
+            while (frame_desc) {
+                LOGI("  Resolution: %dx%d (Frame Index %d)", 
+                     frame_desc->wWidth, frame_desc->wHeight, frame_desc->bFrameIndex);
+                
+                if (frame_desc->bFrameIntervalType == 0) {
+                    // Continuous
+                    uint32_t min_interval = frame_desc->dwMinFrameInterval;
+                    uint32_t max_interval = frame_desc->dwMaxFrameInterval;
+                    float min_fps = 10000000.0f / max_interval;
+                    float max_fps = 10000000.0f / min_interval;
+                    LOGI("    Continuous: %.1f - %.1f fps", min_fps, max_fps);
+                } else {
+                    // Discrete
+                    LOGI("    Discrete frame rates:");
+                    for (int i = 0; i < frame_desc->bFrameIntervalType; i++) {
+                        uint32_t interval = frame_desc->intervals[i];
+                        float fps = 10000000.0f / interval;
+                        LOGI("      %.2f fps (interval: %u)", fps, interval);
+                    }
+                }
+                frame_desc = frame_desc->next;
+            }
+        }
+        format_desc = format_desc->next;
+    }
+    
+    LOGI("🔍 Frame rate enumeration complete");
+}
+
+// ===== DIRECT VIDEO RECORDING IMPLEMENTATION =====
+
+void UVCCamera::setVideoEncoderCallback(void (*callback)(uint8_t* yuvData, int width, int height, int64_t timestampUs, void* userPtr), void* userPtr) {
+    video_encoder_callback_ = callback;
+    video_callback_user_ptr_ = userPtr;
+    LOGI("🎥 Video encoder callback set: %p", callback);
+}
+
+void UVCCamera::convertYUYVToYUV420(const uint8_t* yuyv_data, uint8_t* yuv420_data, int width, int height) {
+    // YUYV format: Y0 U0 Y1 V0 (4 bytes for 2 pixels)
+    // YUV420 format: All Y values, then U values (1/4 size), then V values (1/4 size)
+    
+    const int ySize = width * height;
+    const int uvSize = ySize / 4;
+    
+    uint8_t* yPlane = yuv420_data;
+    uint8_t* uPlane = yuv420_data + ySize;
+    uint8_t* vPlane = yuv420_data + ySize + uvSize;
+    
+    // Extract Y values (every byte at even positions)
+    for (int i = 0; i < ySize; i++) {
+        yPlane[i] = yuyv_data[i * 2];
+    }
+    
+    // Extract U and V values (subsampled 2x2)
+    int uvIndex = 0;
+    for (int y = 0; y < height; y += 2) {
+        for (int x = 0; x < width; x += 2) {
+            int yuyvIndex = (y * width + x) * 2;
+            uPlane[uvIndex] = yuyv_data[yuyvIndex + 1];     // U value
+            vPlane[uvIndex] = yuyv_data[yuyvIndex + 3];     // V value
+            uvIndex++;
+        }
+    }
 } 
